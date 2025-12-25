@@ -1,30 +1,91 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { supabase } from "@/lib/supabaseClient";
 
-const MOCK_INTERVENTIONS = [
-    {
-        id: "1",
-        client: "Collège Camille Claudel – Villepinte",
-        codeClient: "CL123456",
-        date: "12/09/2025",
-        statut: "Brouillon",
-    },
-    {
-        id: "2",
-        client: "Lycée Jean Moulin – Paris",
-        codeClient: "CL654321",
-        date: "10/09/2025",
-        statut: "Signé",
-    },
-];
+/* =======================
+   Types
+======================= */
+type RecordRow = {
+    id: string;
+    date_fiche: string | null;
+    client: {
+        name: string;
+        code_client: string;
+        city: string | null;
+    } | null;
+};
 
+/* =======================
+   Page
+======================= */
 export default function RecherchePage() {
+    const [records, setRecords] = useState<RecordRow[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
+
+    useEffect(() => {
+        const fetchRecords = async () => {
+            setLoading(true);
+
+            const { data, error } = await supabase
+                .from("records")
+                .select(`
+                    id,
+                    date_fiche,
+                    client:clients (
+                        name,
+                        code_client,
+                        city
+                    )
+                `)
+                .returns<RecordRow[]>()
+                .order("created_at", { ascending: false });
+
+            if (!error && data) {
+                setRecords(data);
+            }
+
+            setLoading(false);
+        };
+
+        fetchRecords();
+    }, []);
+
     return (
         <div>
             <h1 style={{ fontSize: 24, fontWeight: 700 }}>
                 Recherche & modification
             </h1>
 
-            {/* Barre de recherche */}
+            {/* =======================
+                Bouton nouvelle fiche
+            ======================= */}
+            <div
+                style={{
+                    marginTop: 16,
+                    display: "flex",
+                    justifyContent: "flex-end",
+                }}
+            >
+                <Link
+                    href="/recherche/nouvelle"
+                    style={{
+                        padding: "10px 16px",
+                        borderRadius: 8,
+                        backgroundColor: "#2563eb",
+                        color: "#ffffff",
+                        fontWeight: 500,
+                        textDecoration: "none",
+                    }}
+                >
+                    ➕ Nouvelle fiche
+                </Link>
+            </div>
+
+            {/* =======================
+                Barre de recherche
+            ======================= */}
             <div
                 style={{
                     marginTop: 24,
@@ -64,7 +125,6 @@ export default function RecherchePage() {
                     </div>
                 </div>
 
-                {/* Bouton rechercher */}
                 <div style={{ marginTop: 16, textAlign: "right" }}>
                     <button
                         style={{
@@ -82,63 +142,83 @@ export default function RecherchePage() {
                 </div>
             </div>
 
-            {/* Résultats */}
+            {/* =======================
+                Résultats
+            ======================= */}
             <div style={{ marginTop: 32 }}>
                 <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>
                     Résultats
                 </h2>
 
-                <table
-                    style={{
-                        width: "100%",
-                        borderCollapse: "collapse",
-                        backgroundColor: "#ffffff",
-                        border: "1px solid #e5e7eb",
-                        borderRadius: 8,
-                        overflow: "hidden",
-                    }}
-                >
-                    <thead style={{ backgroundColor: "#f9fafb" }}>
-                        <tr>
-                            <th style={thStyle}>Client</th>
-                            <th style={thStyle}>Code client</th>
-                            <th style={thStyle}>Date</th>
-                            <th style={thStyle}>Statut</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {MOCK_INTERVENTIONS.map((item) => (
-                            <tr
-                                key={item.id}
-                                style={{
-                                    borderTop: "1px solid #e5e7eb",
-                                }}
-                            >
-                                <td style={tdStyle}>
-                                    <Link
-                                        href={`/recherche/${item.id}`}
+                {loading ? (
+                    <p>Chargement...</p>
+                ) : (
+                    <table
+                        style={{
+                            width: "100%",
+                            borderCollapse: "collapse",
+                            backgroundColor: "#ffffff",
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 8,
+                            overflow: "hidden",
+                        }}
+                    >
+                        <thead style={{ backgroundColor: "#f9fafb" }}>
+                            <tr>
+                                <th style={thStyle}>Client</th>
+                                <th style={thStyle}>Code client</th>
+                                <th style={thStyle}>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {records.length === 0 ? (
+                                <tr>
+                                    <td style={tdStyle} colSpan={3}>
+                                        Aucun résultat
+                                    </td>
+                                </tr>
+                            ) : (
+                                records.map((item) => (
+                                    <tr
+                                        key={item.id}
                                         style={{
-                                            color: "#2563eb",
-                                            textDecoration: "none",
-                                            fontWeight: 500,
+                                            borderTop: "1px solid #e5e7eb",
                                         }}
                                     >
-                                        {item.client}
-                                    </Link>
-                                </td>
-                                <td style={tdStyle}>{item.codeClient}</td>
-                                <td style={tdStyle}>{item.date}</td>
-                                <td style={tdStyle}>{item.statut}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+                                        <td style={tdStyle}>
+                                            <Link
+                                                href={`/recherche/${item.id}`}
+                                                style={{
+                                                    color: "#2563eb",
+                                                    textDecoration: "none",
+                                                    fontWeight: 500,
+                                                }}
+                                            >
+                                                {item.client
+                                                    ? `${item.client.name}${item.client.city ? " – " + item.client.city : ""}`
+                                                    : "Client inconnu"}
+                                            </Link>
+                                        </td>
+                                        <td style={tdStyle}>
+                                            {item.client?.code_client ?? "-"}
+                                        </td>
+                                        <td style={tdStyle}>
+                                            {item.date_fiche ?? "-"}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                )}
             </div>
         </div>
     );
 }
 
-/* Styles partagés */
+/* =======================
+   Styles
+======================= */
 const labelStyle = {
     display: "block",
     fontSize: 13,
