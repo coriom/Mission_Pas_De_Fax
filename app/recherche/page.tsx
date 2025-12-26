@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -22,7 +22,10 @@ type RecordRow = {
 ======================= */
 export default function RecherchePage() {
     const [records, setRecords] = useState<RecordRow[]>([]);
-    const [loading, setLoading] = useState<boolean>(true);
+    const [loading, setLoading] = useState(true);
+
+    const [searchText, setSearchText] = useState("");
+    const [searchCode, setSearchCode] = useState("");
 
     useEffect(() => {
         const fetchRecords = async () => {
@@ -39,11 +42,10 @@ export default function RecherchePage() {
                         city
                     )
                 `)
-                .returns<RecordRow[]>()
                 .order("created_at", { ascending: false });
 
             if (!error && data) {
-                setRecords(data);
+                setRecords(data as RecordRow[]);
             }
 
             setLoading(false);
@@ -52,15 +54,33 @@ export default function RecherchePage() {
         fetchRecords();
     }, []);
 
+    /* =======================
+       Filtrage en temps réel
+    ======================= */
+    const filteredRecords = useMemo(() => {
+        return records.filter((item) => {
+            const clientName = item.client?.name?.toLowerCase() ?? "";
+            const city = item.client?.city?.toLowerCase() ?? "";
+            const code = item.client?.code_client?.toLowerCase() ?? "";
+
+            const textMatch =
+                !searchText ||
+                `${clientName} ${city}`.includes(searchText.toLowerCase());
+
+            const codeMatch =
+                !searchCode || code.includes(searchCode.toLowerCase());
+
+            return textMatch && codeMatch;
+        });
+    }, [records, searchText, searchCode]);
+
     return (
         <div>
             <h1 style={{ fontSize: 24, fontWeight: 700 }}>
                 Recherche & modification
             </h1>
 
-            {/* =======================
-                Bouton nouvelle fiche
-            ======================= */}
+            {/* Bouton nouvelle fiche */}
             <div
                 style={{
                     marginTop: 16,
@@ -83,9 +103,7 @@ export default function RecherchePage() {
                 </Link>
             </div>
 
-            {/* =======================
-                Barre de recherche
-            ======================= */}
+            {/* Barre de recherche */}
             <div
                 style={{
                     marginTop: 24,
@@ -109,44 +127,34 @@ export default function RecherchePage() {
                         <input
                             type="text"
                             placeholder="Ex : Collège Camille Claudel – Villepinte"
+                            value={searchText}
+                            onChange={(e) => setSearchText(e.target.value)}
                             style={inputStyle}
                         />
                     </div>
 
                     <div>
-                        <label style={labelStyle}>
-                            Code client
-                        </label>
+                        <label style={labelStyle}>Code client</label>
                         <input
                             type="text"
                             placeholder="CLxxxxxx"
+                            value={searchCode}
+                            onChange={(e) => setSearchCode(e.target.value)}
                             style={inputStyle}
                         />
                     </div>
                 </div>
-
-                <div style={{ marginTop: 16, textAlign: "right" }}>
-                    <button
-                        style={{
-                            padding: "10px 16px",
-                            borderRadius: 8,
-                            border: "none",
-                            backgroundColor: "#111827",
-                            color: "#ffffff",
-                            fontWeight: 500,
-                            cursor: "pointer",
-                        }}
-                    >
-                        Rechercher
-                    </button>
-                </div>
             </div>
 
-            {/* =======================
-                Résultats
-            ======================= */}
+            {/* Résultats */}
             <div style={{ marginTop: 32 }}>
-                <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>
+                <h2
+                    style={{
+                        fontSize: 18,
+                        fontWeight: 600,
+                        marginBottom: 12,
+                    }}
+                >
                     Résultats
                 </h2>
 
@@ -171,18 +179,19 @@ export default function RecherchePage() {
                             </tr>
                         </thead>
                         <tbody>
-                            {records.length === 0 ? (
+                            {filteredRecords.length === 0 ? (
                                 <tr>
                                     <td style={tdStyle} colSpan={3}>
                                         Aucun résultat
                                     </td>
                                 </tr>
                             ) : (
-                                records.map((item) => (
+                                filteredRecords.map((item) => (
                                     <tr
                                         key={item.id}
                                         style={{
-                                            borderTop: "1px solid #e5e7eb",
+                                            borderTop:
+                                                "1px solid #e5e7eb",
                                         }}
                                     >
                                         <td style={tdStyle}>
@@ -195,7 +204,12 @@ export default function RecherchePage() {
                                                 }}
                                             >
                                                 {item.client
-                                                    ? `${item.client.name}${item.client.city ? " – " + item.client.city : ""}`
+                                                    ? `${item.client.name}${
+                                                          item.client.city
+                                                              ? " – " +
+                                                                item.client.city
+                                                              : ""
+                                                      }`
                                                     : "Client inconnu"}
                                             </Link>
                                         </td>
