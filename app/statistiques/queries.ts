@@ -241,17 +241,16 @@ export async function fetchRecentClients(limit = 10) {
         .from("record_history")
         .select(`
             created_at,
-            record:records (
+            record:records!left (
                 id,
-                client:clients (
+                client:clients!left (
                     name,
                     code_client,
                     city
                 )
             )
         `)
-        .order("created_at", { ascending: false })
-        .limit(limit);
+
 
     if (error || !data) return [];
 
@@ -262,6 +261,7 @@ export async function fetchRecentClients(limit = 10) {
         code: row.record?.client?.code_client ?? "-",
         city: row.record?.client?.city ?? null,
     }));
+
 }
 
 /* =======================
