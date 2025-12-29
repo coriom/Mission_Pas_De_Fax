@@ -346,7 +346,7 @@ const [commentaire, setCommentaire] = useState("");
                             <Th>Emplacement du dispositif</Th>
                             <Th>Type dispositif</Th>
                             <Th style={{ width: "60px" }}>N°</Th>
-                            <Th style={{ width: "44px" }}></Th>
+                            <Th style={{ width: "44px" }}> </Th>
                         </tr>
                     </thead>
 
