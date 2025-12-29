@@ -5,20 +5,27 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
 type HistoryRow = {
+  id: string;
+  created_at: string;
+  updated_by_email: string | null;
+  record: {
     id: string;
-    created_at: string;
-    updated_by: {
-        username: string;
+    client: {
+      name: string;
+      code_client: string;
+      city: string | null;
     } | null;
-    record: {
-        id: string;
-        client: {
-            name: string;
-            code_client: string;
-            city: string | null;
-        } | null;
-    } | null;
+  } | null;
 };
+
+
+function normalize(str: string) {
+    return str
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9 ]/g, "");
+}
 
 
 export default function HistoriquePage() {
@@ -27,46 +34,56 @@ export default function HistoriquePage() {
     const [search, setSearch] = useState("");
 
     useEffect(() => {
-        const fetchHistory = async () => {
-            setLoading(true);
+    const fetchHistory = async () => {
+        setLoading(true);
 
-            const { data, error } = await supabase
-                .from("record_history")
-                .select(`
-                    id,
-                    created_at,
-                    updated_by:user_profiles (
-                        username
-                    ),
-                    record:records (
-                        id,
-                        client:clients (
-                            name,
-                            code_client,
-                            city
-                        )
-                    )
-                `)
+        const { data, error } = await supabase
+        .from("record_history_view")
+        .select(`
+            id,
+            created_at,
+            updated_by_email,
+            record:records (
+            id,
+            client:clients!left (
+                name,
+                code_client,
+                city
+            )
+            )
+        `)
+        .order("created_at", { ascending: false })
+        .limit(50);
 
-                .order("created_at", { ascending: false })
-                .limit(50);
+        if (!error && data) {
+        setRows(data as HistoryRow[]);
+        }
 
-            if (!error && data) {
-                setRows(data as HistoryRow[]);
-            }
+        setLoading(false);
+    };
 
-            setLoading(false);
-        };
-
-        fetchHistory();
+    fetchHistory();
     }, []);
 
-    const filtered = rows.filter((r) =>
-        !search ||
-        r.record?.client?.code_client
-            ?.toLowerCase()
-            .includes(search.toLowerCase())
-    );
+
+
+    const filtered = rows.filter((row) => {
+        if (!search) return true;
+
+        const tokens = normalize(search)
+            .split(" ")
+            .filter(Boolean);
+
+        const clientName = normalize(row.record?.client?.name ?? "");
+        const city = normalize(row.record?.client?.city ?? "");
+        const code = normalize(row.record?.client?.code_client ?? "");
+        const username = normalize(row.updated_by_email ?? "");
+
+        const haystack = `${clientName} ${city} ${code} ${username}`;
+
+        return tokens.every((token) => haystack.includes(token));
+    });
+
 
     /* =======================
        RESTAURATION VERSION
@@ -130,7 +147,7 @@ export default function HistoriquePage() {
             <div style={{ marginTop: 20, maxWidth: 320 }}>
                 <input
                     type="text"
-                    placeholder="Rechercher par code client (ex : CL12345)"
+                    placeholder="Client, ville, code client ou utilisateur…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     style={{
@@ -191,23 +208,44 @@ export default function HistoriquePage() {
                                         </Td>
 
                                         <Td>
-                                            {row.record?.client
-                                                ? `${row.record.client.name}${
-                                                      row.record.client.city
-                                                          ? " – " +
-                                                            row.record.client.city
-                                                          : ""
-                                                  }`
-                                                : "Client inconnu"}
+                                            {row.record?.client ? (
+                                                <HighlightText
+                                                    search={search}
+                                                    text={`${row.record.client.name}${
+                                                        row.record.client.city
+                                                            ? " – " + row.record.client.city
+                                                            : ""
+                                                    }`}
+                                                />
+                                            ) : (
+                                                <em style={{ color: "#6b7280" }}>Client supprimé</em>
+                                            )}
+
                                         </Td>
 
                                         <Td>
-                                            {row.record?.client
-                                                ?.code_client ?? "-"}
+                                            {row.record?.client?.code_client ? (
+                                                <HighlightText
+                                                    search={search}
+                                                    text={row.record.client.code_client}
+                                                />
+                                            ) : (
+                                                "-"
+                                            )}
+
                                         </Td>
                                         
                                         <Td>
-                                            {row.updated_by?.username ?? "—"}
+                                            {row.updated_by_email ? (
+                                            <HighlightText
+                                                search={search}
+                                                text={row.updated_by_email}
+                                            />
+                                            ) : (
+                                            "—"
+                                            )}
+
+
                                         </Td>
 
 
@@ -316,4 +354,50 @@ function Td({
             {children}
         </td>
     );
+}
+
+function HighlightText({
+    text,
+    search,
+}: {
+    text: string;
+    search: string;
+}) {
+    if (!search) return <>{text}</>;
+
+    const tokens = search
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .split(" ")
+        .filter(Boolean);
+
+    let parts: React.ReactNode[] = [text];
+
+    tokens.forEach((token) => {
+        parts = parts.flatMap((part) => {
+            if (typeof part !== "string") return [part];
+
+            const regex = new RegExp(`(${token})`, "gi");
+
+            return part.split(regex).map((sub, i) =>
+                regex.test(sub) ? (
+                    <mark
+                        key={i}
+                        style={{
+                            backgroundColor: "#fde68a",
+                            padding: "0 2px",
+                            borderRadius: 4,
+                        }}
+                    >
+                        {sub}
+                    </mark>
+                ) : (
+                    sub
+                )
+            );
+        });
+    });
+
+    return <>{parts}</>;
 }

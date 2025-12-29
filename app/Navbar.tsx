@@ -93,6 +93,7 @@ export default function Navbar() {
             <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
                 <Link href="/recherche">Recherche & modification</Link>
                 <Link href="/historique">Historique</Link>
+                <Link href="/statistiques">Statistiques</Link>
 
                 {profile && (
                     <>

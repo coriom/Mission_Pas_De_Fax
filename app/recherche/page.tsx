@@ -18,6 +18,11 @@ type RecordRow = {
 };
 
 /* =======================
+   Constantes pagination
+======================= */
+const PAGE_SIZE = 10;
+
+/* =======================
    Page
 ======================= */
 export default function RecherchePage() {
@@ -27,7 +32,38 @@ export default function RecherchePage() {
     const [searchText, setSearchText] = useState("");
     const [searchCode, setSearchCode] = useState("");
 
+    const [page, setPage] = useState(1);
+    const [isAdmin, setIsAdmin] = useState(false);
+
+
+    function normalize(str: string) {
+    return str
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9 ]/g, "");
+    }
+
     useEffect(() => {
+        
+        const fetchRole = async () => {
+            const {
+                data: { user },
+            } = await supabase.auth.getUser();
+
+            if (!user) return;
+
+            const { data: profile } = await supabase
+                .from("profiles")
+                .select("role")
+                .eq("id", user.id)
+                .single();
+
+            setIsAdmin(profile?.role === "admin");
+        };
+
+        fetchRole();
+        
         const fetchRecords = async () => {
             setLoading(true);
 
@@ -55,24 +91,83 @@ export default function RecherchePage() {
     }, []);
 
     /* =======================
-       Filtrage en temps réel
+        Filtrage temps réel
     ======================= */
+        const handleDelete = async (recordId: string) => {
+            
+            const ok = confirm(
+                    "⚠️ Cette action supprimera définitivement la fiche et tout son historique.\n\nContinuer ?"
+                );
+
+                if (!ok) return;
+
+
+                try {
+
+                    // 2️⃣ Supprimer les dispositifs
+                    await supabase
+                        .from("record_devices")
+                        .delete()
+                        .eq("record_id", recordId);
+
+                    // 3️⃣ Supprimer la fiche
+                    await supabase
+                        .from("records")
+                        .delete()
+                        .eq("id", recordId);
+
+                    // 4️⃣ Mise à jour UI
+                    setRecords((prev) =>
+                        prev.filter((r) => r.id !== recordId)
+                    );
+
+                    alert("✅ Fiche supprimée définitivement.");
+                } catch (err) {
+                    console.error(err);
+                    alert("❌ Erreur lors de la suppression.");
+                }
+            };
+
     const filteredRecords = useMemo(() => {
+        const textTokens = normalize(searchText)
+            .split(" ")
+            .filter(Boolean);
+
+        const codeToken = normalize(searchCode);
+
         return records.filter((item) => {
-            const clientName = item.client?.name?.toLowerCase() ?? "";
-            const city = item.client?.city?.toLowerCase() ?? "";
-            const code = item.client?.code_client?.toLowerCase() ?? "";
+            const name = normalize(item.client?.name ?? "");
+            const city = normalize(item.client?.city ?? "");
+            const code = normalize(item.client?.code_client ?? "");
+
+            const haystack = `${name} ${city}`;
 
             const textMatch =
-                !searchText ||
-                `${clientName} ${city}`.includes(searchText.toLowerCase());
+                textTokens.length === 0 ||
+                textTokens.every((token) => haystack.includes(token));
 
             const codeMatch =
-                !searchCode || code.includes(searchCode.toLowerCase());
+                !codeToken || code.includes(codeToken);
 
             return textMatch && codeMatch;
         });
     }, [records, searchText, searchCode]);
+
+
+    /* Reset page quand on tape */
+    useEffect(() => {
+        setPage(1);
+    }, [searchText, searchCode]);
+
+    /* =======================
+        Pagination
+    ======================= */
+    const totalPages = Math.ceil(filteredRecords.length / PAGE_SIZE);
+
+    const paginatedRecords = filteredRecords.slice(
+        (page - 1) * PAGE_SIZE,
+        page * PAGE_SIZE
+    );
 
     return (
         <div>
@@ -161,73 +256,203 @@ export default function RecherchePage() {
                 {loading ? (
                     <p>Chargement...</p>
                 ) : (
-                    <table
-                        style={{
-                            width: "100%",
-                            borderCollapse: "collapse",
-                            backgroundColor: "#ffffff",
-                            border: "1px solid #e5e7eb",
-                            borderRadius: 8,
-                            overflow: "hidden",
-                        }}
-                    >
-                        <thead style={{ backgroundColor: "#f9fafb" }}>
-                            <tr>
-                                <th style={thStyle}>Client</th>
-                                <th style={thStyle}>Code client</th>
-                                <th style={thStyle}>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {filteredRecords.length === 0 ? (
+                    <>
+                        <table
+                            style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                                backgroundColor: "#ffffff",
+                                border: "1px solid #e5e7eb",
+                                borderRadius: 8,
+                                overflow: "hidden",
+                            }}
+                        >
+                            <thead style={{ backgroundColor: "#f9fafb" }}>
                                 <tr>
-                                    <td style={tdStyle} colSpan={3}>
-                                        Aucun résultat
-                                    </td>
+                                    <th style={thStyle}>Client</th>
+                                    <th style={thStyle}>Code client</th>
+                                    <th style={thStyle}>Date</th>
+                                    {isAdmin && <th style={thStyle}></th>}
                                 </tr>
-                            ) : (
-                                filteredRecords.map((item) => (
-                                    <tr
-                                        key={item.id}
-                                        style={{
-                                            borderTop:
-                                                "1px solid #e5e7eb",
-                                        }}
-                                    >
-                                        <td style={tdStyle}>
-                                            <Link
-                                                href={`/recherche/${item.id}`}
-                                                style={{
-                                                    color: "#2563eb",
-                                                    textDecoration: "none",
-                                                    fontWeight: 500,
-                                                }}
-                                            >
-                                                {item.client
-                                                    ? `${item.client.name}${
-                                                          item.client.city
-                                                              ? " – " +
-                                                                item.client.city
-                                                              : ""
-                                                      }`
-                                                    : "Client inconnu"}
-                                            </Link>
-                                        </td>
-                                        <td style={tdStyle}>
-                                            {item.client?.code_client ?? "-"}
-                                        </td>
-                                        <td style={tdStyle}>
-                                            {item.date_fiche ?? "-"}
+                            </thead>
+                            <tbody>
+                                {paginatedRecords.length === 0 ? (
+                                    <tr>
+                                        <td style={tdStyle} colSpan={3}>
+                                            Aucun résultat
                                         </td>
                                     </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
+                                ) : (
+                                    filteredRecords.map((item) => (
+                                        <tr
+                                            key={item.id}
+                                            style={{
+                                                borderTop:
+                                                    "1px solid #e5e7eb",
+                                            }}
+                                        >
+                                            <td style={tdStyle}>
+                                                <Link
+                                                    href={`/recherche/${item.id}`}
+                                                    style={{
+                                                        color: "#2563eb",
+                                                        textDecoration:
+                                                            "none",
+                                                        fontWeight: 500,
+                                                    }}
+                                                >
+                                                    {item.client ? (
+                                                        <>
+                                                            {highlight(
+                                                                item.client.name,
+                                                                searchText
+                                                            )}
+                                                            {item.client.city && (
+                                                                <>
+                                                                    {" – "}
+                                                                    {highlight(
+                                                                        item.client.city,
+                                                                        searchText
+                                                                    )}
+                                                                </>
+                                                            )}
+                                                        </>
+                                                    ) : (
+                                                        "Client inconnu"
+                                                    )}
+                                                </Link>
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {highlight(
+                                                    item.client?.code_client ??
+                                                        "-",
+                                                    searchCode
+                                                )}
+                                            </td>
+                                            <td style={tdStyle}>
+                                                {item.date_fiche ?? "-"}
+                                            </td>
+                                        
+
+
+                                            {isAdmin && (
+                                                <td
+                                                    style={{
+                                                        ...tdStyle,
+                                                        textAlign: "center",
+                                                        width: 44,
+                                                    }}
+                                                >
+                                                    <button
+                                                        onClick={() => handleDelete(item.id)}
+                                                        title="Supprimer définitivement"
+                                                        style={{
+                                                            width: 30,
+                                                            height: 30,
+                                                            borderRadius: 8,
+                                                            border: "1px solid #e5e7eb",
+                                                            backgroundColor: "#ffffff",
+                                                            cursor: "pointer",
+                                                            color: "#dc2626",
+                                                            fontWeight: 700,
+                                                            lineHeight: "28px",
+                                                        }}
+                                                    >
+                                                        ×
+                                                    </button>
+                                                </td>
+                                            )}
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+
+                        {/* Pagination */}
+                        {totalPages > 1 && (
+                            <div
+                                style={{
+                                    marginTop: 16,
+                                    display: "flex",
+                                    justifyContent: "center",
+                                    gap: 8,
+                                }}
+                            >
+                                <button
+                                    disabled={page === 1}
+                                    onClick={() =>
+                                        setPage((p) => p - 1)
+                                    }
+                                    style={paginationButton(page === 1)}
+                                >
+                                    ← Précédent
+                                </button>
+
+                                <span
+                                    style={{
+                                        padding: "6px 10px",
+                                        fontSize: 14,
+                                    }}
+                                >
+                                    Page {page} / {totalPages}
+                                </span>
+
+                                <button
+                                    disabled={page === totalPages}
+                                    onClick={() =>
+                                        setPage((p) => p + 1)
+                                    }
+                                    style={paginationButton(
+                                        page === totalPages
+                                    )}
+                                >
+                                    Suivant →
+                                </button>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
         </div>
     );
+}
+
+/* =======================
+   Utils
+======================= */
+function highlight(text: string, query: string) {
+    if (!query) return text;
+
+    const regex = new RegExp(`(${query})`, "gi");
+    const parts = text.split(regex);
+
+    return parts.map((part, index) =>
+        regex.test(part) ? (
+            <mark
+                key={index}
+                style={{
+                    backgroundColor: "#FEF08A",
+                    padding: "0 2px",
+                    borderRadius: 4,
+                }}
+            >
+                {part}
+            </mark>
+        ) : (
+            part
+        )
+    );
+}
+
+function paginationButton(disabled: boolean) {
+    return {
+        padding: "6px 12px",
+        borderRadius: 6,
+        border: "1px solid #d1d5db",
+        backgroundColor: disabled ? "#f3f4f6" : "#ffffff",
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontSize: 14,
+    };
 }
 
 /* =======================

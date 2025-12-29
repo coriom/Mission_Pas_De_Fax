@@ -125,9 +125,16 @@ const [commentaire, setCommentaire] = useState("");
         setSaveState("saving");
 
         try {
-            /* =======================
-            1️⃣ Lire l’état actuel en base
-            ======================= */
+            const { data: authData, error: authError } =
+                await supabase.auth.getUser();
+
+            if (authError || !authData.user) {
+                throw new Error("Utilisateur non authentifié");
+            }
+
+            const userId = authData.user.id;
+
+            /* 1️⃣ État actuel */
             const { data: currentRows, error: fetchError } = await supabase
                 .from("record_devices")
                 .select("localisation_zone, emplacement, type_dispositif, numero")
@@ -136,41 +143,24 @@ const [commentaire, setCommentaire] = useState("");
 
             if (fetchError) throw fetchError;
 
-            /* =======================
-            2️⃣ Sauvegarder snapshot
-            ======================= */
-            const {
-                data: { user },
-            } = await supabase.auth.getUser();
-
-            await supabase.from("record_history").insert({
-                record_id: recordId,
-                updated_by: user?.id ?? null,
-                snapshot: {
-                    rows: currentRows ?? [],
-                    commentaire,
-                },
-            });
-
-
-
-            /* =======================
-            3️⃣ Nettoyer l’historique (garder 2)
-            ======================= */
-            const { data: history } = await supabase
+            /* 2️⃣ Historique */
+            const { error: historyError } = await supabase
                 .from("record_history")
-                .select("id")
-                .eq("record_id", recordId)
-                .order("created_at", { ascending: false });
+                .insert({
+                    record_id: recordId,
+                    updated_by: userId,
+                    snapshot: {
+                        rows: currentRows ?? [],
+                        commentaire,
+                    },
+                });
 
-            if (history && history.length > 2) {
-                const toDelete = history.slice(2).map((h) => h.id);
-                await supabase.from("record_history").delete().in("id", toDelete);
+            if (historyError) {
+                console.error("❌ record_history insert failed", historyError);
+                throw historyError;
             }
 
-            /* =======================
-            4️⃣ Sauvegarde actuelle
-            ======================= */
+            /* 3️⃣ Sauvegarde courante */
             const payload = rows.map((r) => ({
                 id: r.id,
                 record_id: recordId,
@@ -186,7 +176,6 @@ const [commentaire, setCommentaire] = useState("");
 
             if (saveError) throw saveError;
 
-            dirtyIds.current.clear();
             await supabase
                 .from("records")
                 .update({ commentaire })
@@ -195,10 +184,11 @@ const [commentaire, setCommentaire] = useState("");
             setSaveState("saved");
             setTimeout(() => setSaveState("idle"), 1200);
         } catch (err) {
-            console.error(err);
+            console.error("❌ SAVE ERROR", err);
             setSaveState("error");
         }
     };
+
 
 
     /** =======================

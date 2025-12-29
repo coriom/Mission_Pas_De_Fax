@@ -39,7 +39,7 @@ export default function NouvelleFichePage() {
 
         try {
             /* =======================
-               1️⃣ Client : récupérer ou créer
+            1️⃣ Client : récupérer ou créer
             ======================= */
             let clientId: string | null = null;
 
