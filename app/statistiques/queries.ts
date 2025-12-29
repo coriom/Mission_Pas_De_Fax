@@ -250,19 +250,26 @@ export async function fetchRecentClients(limit = 10) {
                 )
             )
         `)
-
+        .order("created_at", { ascending: false })
+        .limit(limit);
 
     if (error || !data) return [];
 
-    return data.map((row) => ({
-        date: row.created_at,
-        id: row.record?.id,
-        name: row.record?.client?.name ?? "Client inconnu",
-        code: row.record?.client?.code_client ?? "-",
-        city: row.record?.client?.city ?? null,
-    }));
+    return data.map((row: any) => {
+        const record = row.record ?? null;
+        const client = record?.client ?? null;
 
+        return {
+            date: row.created_at,
+            id: record?.id ?? null,
+            name: client?.name ?? "Client inconnu",
+            code: client?.code_client ?? "-",
+            city: client?.city ?? null,
+        };
+    });
 }
+
+
 
 /* =======================
    Clients les moins actifs
