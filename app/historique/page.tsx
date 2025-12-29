@@ -366,23 +366,22 @@ function HighlightText({
 }) {
     if (!search) return <>{text}</>;
 
-    const tokens = search
+    const normalizedSearch = search
         .toLowerCase()
         .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .split(" ")
-        .filter(Boolean);
+        .replace(/[\u0300-\u036f]/g, "");
 
-    let parts: React.ReactNode[] = [text];
+    const regex = new RegExp(`(${normalizedSearch})`, "gi");
 
-    tokens.forEach((token) => {
-        parts = parts.flatMap((part) => {
-            if (typeof part !== "string") return [part];
-
-            const regex = new RegExp(`(${token})`, "gi");
-
-            return part.split(regex).map((sub, i) =>
-                regex.test(sub) ? (
+    return (
+        <>
+            {text.split(regex).map((part, i) =>
+                regex.test(
+                    part
+                        .toLowerCase()
+                        .normalize("NFD")
+                        .replace(/[\u0300-\u036f]/g, "")
+                ) ? (
                     <mark
                         key={i}
                         style={{
@@ -391,14 +390,13 @@ function HighlightText({
                             borderRadius: 4,
                         }}
                     >
-                        {sub}
+                        {part}
                     </mark>
                 ) : (
-                    sub
+                    part
                 )
-            );
-        });
-    });
-
-    return <>{parts}</>;
+            )}
+        </>
+    );
 }
+
