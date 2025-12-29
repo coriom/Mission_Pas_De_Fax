@@ -5,7 +5,7 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
 /* =======================
-   Types
+    Types
 ======================= */
 type RecordRow = {
     id: string;
@@ -18,7 +18,7 @@ type RecordRow = {
 };
 
 /* =======================
-   Constantes pagination
+    Constantes pagination
 ======================= */
 const PAGE_SIZE = 10;
 
@@ -81,7 +81,7 @@ export default function RecherchePage() {
                 .order("created_at", { ascending: false });
 
             if (!error && data) {
-                setRecords(data as RecordRow[]);
+                setRecords;
             }
 
             setLoading(false);

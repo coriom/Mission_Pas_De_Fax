@@ -19,6 +19,7 @@ type HistoryRow = {
 };
 
 
+
 function normalize(str: string) {
     return str
         .toLowerCase()
@@ -43,7 +44,7 @@ export default function HistoriquePage() {
             id,
             created_at,
             updated_by_email,
-            record:records (
+            record:records!left (
             id,
             client:clients!left (
                 name,
@@ -56,7 +57,7 @@ export default function HistoriquePage() {
         .limit(50);
 
         if (!error && data) {
-        setRows(data as HistoryRow[]);
+        setRows;
         }
 
         setLoading(false);

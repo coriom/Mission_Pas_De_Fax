@@ -89,7 +89,7 @@ const [commentaire, setCommentaire] = useState("");
                 .single();
 
             if (!metaError && meta) {
-                setRecordMeta(meta as RecordMeta);
+                setRecordMeta;
             }
 
         };
