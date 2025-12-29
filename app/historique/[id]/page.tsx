@@ -38,7 +38,7 @@ export default function HistoriqueVersionPage() {
                 return;
             }
 
-            setRows(data.snapshot.rows || []);
+            setRows(data.snapshot?.rows || []);
             setRecordId(data.record_id);
             setCreatedAt(data.created_at);
             setLoading(false);
@@ -53,7 +53,6 @@ export default function HistoriqueVersionPage() {
         const ok = confirm(
             "Cette action remplacera l’état actuel de la fiche par cette version.\n\nContinuer ?"
         );
-
         if (!ok) return;
 
         try {
@@ -92,6 +91,7 @@ export default function HistoriqueVersionPage() {
 
     return (
         <div>
+            {/* Header */}
             <div
                 style={{
                     display: "flex",
@@ -148,6 +148,7 @@ export default function HistoriqueVersionPage() {
                 </div>
             </div>
 
+            {/* Warning */}
             <div
                 style={{
                     marginTop: 20,
@@ -162,6 +163,7 @@ export default function HistoriqueVersionPage() {
                 ⚠️ Ceci est une version historique en lecture seule.
             </div>
 
+            {/* Table */}
             <div
                 style={{
                     marginTop: 20,
@@ -193,8 +195,7 @@ export default function HistoriqueVersionPage() {
                                 <tr
                                     key={idx}
                                     style={{
-                                        borderTop:
-                                            "1px solid #e5e7eb",
+                                        borderTop: "1px solid #e5e7eb",
                                     }}
                                 >
                                     <Td>{row.localisation_zone}</Td>
@@ -223,8 +224,10 @@ export default function HistoriqueVersionPage() {
 ======================= */
 function Th({
     children,
+    style,
 }: {
     children: React.ReactNode;
+    style?: React.CSSProperties;
 }) {
     return (
         <th
@@ -233,6 +236,7 @@ function Th({
                 padding: "12px",
                 fontSize: 13,
                 fontWeight: 700,
+                ...style,
             }}
         >
             {children}
@@ -243,9 +247,11 @@ function Th({
 function Td({
     children,
     colSpan,
+    style,
 }: {
     children: React.ReactNode;
     colSpan?: number;
+    style?: React.CSSProperties;
 }) {
     return (
         <td
@@ -253,6 +259,7 @@ function Td({
             style={{
                 padding: "12px",
                 fontSize: 14,
+                ...style,
             }}
         >
             {children}
