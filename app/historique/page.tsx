@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
 /* =======================
    Types
 ======================= */
-type HistoryRow = {
+type HistoryDbRow = {
     id: string;
     created_at: string;
-    updated_by_email: string | null;
+    updated_by: string | null; // ✅ UUID user
     record: {
         id: string;
         client: {
@@ -19,6 +19,26 @@ type HistoryRow = {
             city: string | null;
         } | null;
     } | null;
+};
+
+type HistoryRow = {
+    id: string;
+    created_at: string;
+    updated_by_email: string | null;
+    updated_by: string | null;
+    record: {
+        id: string;
+        client: {
+            name: string;
+            code_client: string;
+            city: string | null;
+        } | null;
+    } | null;
+};
+
+type ProfileRow = {
+    id: string;
+    email: string | null;
 };
 
 function normalize(str: string) {
@@ -40,54 +60,115 @@ export default function HistoriquePage() {
     useEffect(() => {
         const fetchHistory = async () => {
             setLoading(true);
-            const { data, error } = await supabase
-                .from("record_history")
-                .select(`
-                    id,
-                    created_at,
-                    updated_by:updated_by (
-                    email
-                    ),
-                    record:records (
-                    id,
-                    client:clients (
-                        name,
-                        code_client,
-                        city
+
+            try {
+                // 1) On récupère l’historique + fiche + client (SANS email)
+                const { data, error } = await supabase
+                    .from("record_history")
+                    .select(
+                        `
+                        id,
+                        created_at,
+                        updated_by,
+                        record:records (
+                            id,
+                            client:clients (
+                                name,
+                                code_client,
+                                city
+                            )
+                        )
+                    `
                     )
-                    )
-                `)
-                .order("created_at", { ascending: false })
-                .limit(50);
+                    .order("created_at", { ascending: false })
+                    .limit(50);
 
+                if (error) {
+                    // ✅ log détaillé (évite les "{}")
+                    console.error("HISTORY FETCH ERROR (FULL)", {
+                        message: error.message,
+                        details: (error as any).details,
+                        hint: (error as any).hint,
+                        code: (error as any).code,
+                        raw: error,
+                    });
+                    setRows([]);
+                    setLoading(false);
+                    return;
+                }
 
+                const history = (data ?? []) as HistoryDbRow[];
 
-            if (!error && data) {
-                setRows(data);
-            } else {
-                console.error("HISTORY FETCH ERROR", error);
+                // 2) On récupère les emails via profiles (si possible)
+                const userIds = Array.from(
+                    new Set(history.map((r) => r.updated_by).filter(Boolean))
+                ) as string[];
+
+                let emailById = new Map<string, string | null>();
+
+                if (userIds.length > 0) {
+                    const { data: profiles, error: profErr } = await supabase
+                        .from("profiles")
+                        .select("id, email")
+                        .in("id", userIds);
+
+                    if (profErr) {
+                        console.error("PROFILES FETCH ERROR (FULL)", {
+                            message: profErr.message,
+                            details: (profErr as any).details,
+                            hint: (profErr as any).hint,
+                            code: (profErr as any).code,
+                            raw: profErr,
+                        });
+                    } else {
+                        (profiles ?? []).forEach((p) => {
+                            const pr = p as ProfileRow;
+                            emailById.set(pr.id, pr.email ?? null);
+                        });
+                    }
+                }
+
+                // 3) On reconstruit les lignes affichées
+                const hydrated: HistoryRow[] = history.map((r) => ({
+                    id: r.id,
+                    created_at: r.created_at,
+                    updated_by: r.updated_by ?? null,
+                    updated_by_email: r.updated_by
+                        ? emailById.get(r.updated_by) ?? null
+                        : null,
+                    record: r.record ?? null,
+                }));
+
+                setRows(hydrated);
+            } catch (err: any) {
+                console.error("HISTORY FETCH CRASH (FULL)", {
+                    message: err?.message,
+                    raw: err,
+                });
+                setRows([]);
+            } finally {
+                setLoading(false);
             }
-
-            setLoading(false);
         };
 
         fetchHistory();
     }, []);
 
-    const filtered = rows.filter((row) => {
-        if (!search) return true;
+    const filtered = useMemo(() => {
+        return rows.filter((row) => {
+            if (!search) return true;
 
-        const tokens = normalize(search).split(" ").filter(Boolean);
+            const tokens = normalize(search).split(" ").filter(Boolean);
 
-        const clientName = normalize(row.record?.client?.name ?? "");
-        const city = normalize(row.record?.client?.city ?? "");
-        const code = normalize(row.record?.client?.code_client ?? "");
-        const username = normalize(row.updated_by_email ?? "");
+            const clientName = normalize(row.record?.client?.name ?? "");
+            const city = normalize(row.record?.client?.city ?? "");
+            const code = normalize(row.record?.client?.code_client ?? "");
+            const username = normalize(row.updated_by_email ?? "");
 
-        const haystack = `${clientName} ${city} ${code} ${username}`;
-
-        return tokens.every((t) => haystack.includes(t));
-    });
+            const haystack = `${clientName} ${city} ${code} ${username}`;
+            return tokens.every((t) => haystack.includes(t));
+        });
+    }, [rows, search]);
 
     /* =======================
        RESTAURATION VERSION
@@ -107,30 +188,47 @@ export default function HistoriquePage() {
                 .eq("id", row.id)
                 .single();
 
-            if (error || !data?.snapshot?.rows) {
-                throw new Error("Snapshot invalide");
+            if (error) throw error;
+
+            const snapshotRows = (data as any)?.snapshot?.rows;
+            if (!Array.isArray(snapshotRows)) {
+                throw new Error("Snapshot invalide (rows manquant).");
             }
 
-            const snapshotRows = data.snapshot.rows as any[];
-
-            await supabase
+            // 1) purge
+            const { error: delErr } = await supabase
                 .from("record_devices")
                 .delete()
                 .eq("record_id", row.record.id);
 
-            const payload = snapshotRows.map((r, idx) => ({
+            if (delErr) throw delErr;
+
+            // 2) restore
+            // ✅ si tu as maintenant `position`, on la restaure aussi
+            const payload = snapshotRows.map((r: any, idx: number) => ({
                 record_id: row.record!.id,
                 localisation_zone: r.localisation_zone ?? "",
                 emplacement: r.emplacement ?? "",
                 type_dispositif: r.type_dispositif ?? "",
                 numero: r.numero ?? idx + 1,
+                position: r.position ?? idx + 1,
             }));
 
-            await supabase.from("record_devices").insert(payload);
+            const { error: insErr } = await supabase
+                .from("record_devices")
+                .insert(payload);
+
+            if (insErr) throw insErr;
 
             alert("✅ Version restaurée avec succès.");
-        } catch (err) {
-            console.error(err);
+        } catch (err: any) {
+            console.error("RESTORE ERROR (FULL)", {
+                message: err?.message,
+                details: err?.details,
+                hint: err?.hint,
+                code: err?.code,
+                raw: err,
+            });
             alert("❌ Erreur lors de la restauration.");
         }
     };
@@ -138,9 +236,7 @@ export default function HistoriquePage() {
     return (
         <div>
             <h1 style={{ fontSize: 24, fontWeight: 700 }}>Historique</h1>
-            <p style={{ marginTop: 8 }}>
-                Dernières fiches clients modifiées.
-            </p>
+            <p style={{ marginTop: 8 }}>Dernières fiches clients modifiées.</p>
 
             {/* Recherche */}
             <div style={{ marginTop: 20, maxWidth: 320 }}>
@@ -179,7 +275,6 @@ export default function HistoriquePage() {
                                 <Th>Date</Th>
                                 <Th>Client</Th>
                                 <Th>Code client</Th>
-                                <Th>Modifié par</Th>
                                 <Th>Actions</Th>
                             </tr>
                         </thead>
@@ -187,11 +282,14 @@ export default function HistoriquePage() {
                         <tbody>
                             {filtered.length === 0 ? (
                                 <tr>
-                                    <Td colSpan={5}>Aucun résultat</Td>
+                                    <Td colSpan={4}>Aucun résultat</Td>
                                 </tr>
                             ) : (
                                 filtered.map((row) => (
-                                    <tr key={row.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                                    <tr
+                                        key={row.id}
+                                        style={{ borderTop: "1px solid #e5e7eb" }}
+                                    >
                                         <Td>
                                             {new Date(row.created_at).toLocaleString("fr-FR")}
                                         </Td>
@@ -207,26 +305,23 @@ export default function HistoriquePage() {
                                                     }`}
                                                 />
                                             ) : (
-                                                <em style={{ color: "#6b7280" }}>
-                                                    Client supprimé
-                                                </em>
+                                                <em style={{ color: "#6b7280" }}>Client supprimé</em>
                                             )}
                                         </Td>
 
-                                        <Td>
-                                            {row.record?.client?.code_client ?? "-"}
-                                        </Td>
+                                        <Td>{row.record?.client?.code_client ?? "-"}</Td>
 
-                                        <Td>
-                                            {row.updated_by_email ?? "—"}
-                                        </Td>
 
                                         <Td>
                                             <div style={{ display: "flex", gap: 14 }}>
                                                 {row.record && (
                                                     <Link
                                                         href={`/recherche/${row.record.id}`}
-                                                        style={{ color: "#2563eb", fontWeight: 600 }}
+                                                        style={{
+                                                            color: "#2563eb",
+                                                            fontWeight: 600,
+                                                            textDecoration: "none",
+                                                        }}
                                                     >
                                                         Fiche
                                                     </Link>
@@ -234,7 +329,11 @@ export default function HistoriquePage() {
 
                                                 <Link
                                                     href={`/historique/${row.id}`}
-                                                    style={{ color: "#047857", fontWeight: 600 }}
+                                                    style={{
+                                                        color: "#047857",
+                                                        fontWeight: 600,
+                                                        textDecoration: "none",
+                                                    }}
                                                 >
                                                     Version
                                                 </Link>
@@ -247,6 +346,7 @@ export default function HistoriquePage() {
                                                         color: "#dc2626",
                                                         fontWeight: 700,
                                                         cursor: "pointer",
+                                                        padding: 0,
                                                     }}
                                                 >
                                                     Rétablir
@@ -269,7 +369,14 @@ export default function HistoriquePage() {
 ======================= */
 function Th({ children }: { children: React.ReactNode }) {
     return (
-        <th style={{ textAlign: "left", padding: "12px", fontSize: 13, fontWeight: 700 }}>
+        <th
+            style={{
+                textAlign: "left",
+                padding: "12px",
+                fontSize: 13,
+                fontWeight: 700,
+            }}
+        >
             {children}
         </th>
     );

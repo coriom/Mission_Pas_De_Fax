@@ -1,24 +1,36 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { LOCALISATIONS, EMPLACEMENTS, TYPES_DISPOSITIF } from "../constants";
+import RecordPhotos from "./RecordPhotos";
+
 
 type DeviceRow = {
     id: string;
+    record_id: string;
     localisation_zone: string;
     emplacement: string;
     type_dispositif: string;
-    numero: number; // désormais MANUEL
+    numero: number; // ✅ manuel
+    position: number; // ✅ ordre d’affichage
 };
 
 type FieldKey = "localisation_zone" | "emplacement" | "type_dispositif";
+
+// ✅ tout le bandeau est maintenant éditable (admin)
+type MetaKey = "groupe" | "annexe_contrat_numero" | "date_fiche";
+type ClientKey = "name" | "code_client" | "city";
+
 type RecordMeta = {
+    id: string;
+    client_id: string | null; // ✅ nécessaire pour update clients
     groupe: string | null;
     annexe_contrat_numero: string | null;
     date_fiche: string | null;
     client: {
+        id?: string; // optionnel si tu veux le sélectionner
         name: string;
         code_client: string;
         city: string | null;
@@ -32,6 +44,13 @@ export default function ModificationPage() {
     const [rows, setRows] = useState<DeviceRow[]>([]);
     const [recordMeta, setRecordMeta] = useState<RecordMeta | null>(null);
     const [loading, setLoading] = useState(true);
+
+    // ✅ admin : édition bandeau (meta)
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [metaDraft, setMetaDraft] = useState<RecordMeta | null>(null);
+    const [metaSaveState, setMetaSaveState] = useState<
+        "idle" | "dirty" | "saving" | "saved" | "error"
+    >("idle");
 
     // lignes modifiées depuis la dernière sauvegarde
     const dirtyIds = useRef<Set<string>>(new Set());
@@ -49,15 +68,43 @@ export default function ModificationPage() {
         const fetchData = async () => {
             setLoading(true);
 
-            // 1️⃣ Charger les lignes
+            // ✅ Role admin
+            try {
+                const {
+                    data: { user },
+                    error: userError,
+                } = await supabase.auth.getUser();
+
+                if (!userError && user) {
+                    const { data: profile, error: profileError } = await supabase
+                        .from("profiles")
+                        .select("role")
+                        .eq("id", user.id)
+                        .single();
+
+                    if (!profileError) {
+                        setIsAdmin(profile?.role === "admin");
+                    }
+                }
+            } catch {
+                // silencieux
+            }
+
+            // 1️⃣ Charger les lignes (tri par position)
             const { data: devices, error: devicesError } = await supabase
                 .from("record_devices")
-                .select("*")
+                .select(
+                    "id, record_id, localisation_zone, emplacement, type_dispositif, numero, position"
+                )
                 .eq("record_id", recordId)
-                .order("numero", { ascending: true });
+                .order("position", { ascending: true });
 
-            if (!devicesError) {
-                setRows((devices as DeviceRow[]) || []);
+            if (!devicesError && devices) {
+                setRows(devices as DeviceRow[]);
+            } else if (!devicesError && devices) {
+                const sorted = (devices as DeviceRow[]).slice().sort((a, b) => Number(a.position) - Number(b.position));
+                const normalized = sorted.map((r, idx) => ({ ...r, position: idx + 1 }));
+                setRows(normalized);
             }
 
             // 2️⃣ Charger le commentaire
@@ -71,11 +118,13 @@ export default function ModificationPage() {
                 setCommentaire(record.commentaire ?? "");
             }
 
-            // 3️⃣ Charger les métadonnées de la fiche (lecture seule)
+            // 3️⃣ Charger les métadonnées de la fiche (✅ inclut client_id)
             const { data: meta, error: metaError } = await supabase
                 .from("records")
                 .select(
                     `
+                    id,
+                    client_id,
                     groupe,
                     annexe_contrat_numero,
                     date_fiche,
@@ -90,7 +139,11 @@ export default function ModificationPage() {
                 .single();
 
             if (!metaError && meta) {
-                setRecordMeta(meta as RecordMeta);
+                const typed = meta as RecordMeta;
+                setRecordMeta(typed);
+                setMetaDraft(typed);
+            } else if (metaError) {
+                console.error("FETCH META ERROR", metaError);
             }
 
             setLoading(false);
@@ -108,13 +161,12 @@ export default function ModificationPage() {
     };
 
     /** =======================
-     *  MODIFICATION LOCAL UNIQUEMENT (text fields)
+     *  MODIFICATION LOCAL (text fields)
      ======================= */
     const updateRow = (id: string, field: FieldKey, value: string) => {
         setRows((prev) =>
             prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
         );
-
         dirtyIds.current.add(id);
         setSaveState("dirty");
     };
@@ -123,7 +175,6 @@ export default function ModificationPage() {
      *  MODIFICATION LOCAL (numero manuel)
      ======================= */
     const updateNumero = (id: string, value: string) => {
-        // Autoriser la saisie vide temporairement => on met NaN, puis validation au save
         const parsed = value.trim() === "" ? NaN : Number(value);
 
         setRows((prev) =>
@@ -136,17 +187,12 @@ export default function ModificationPage() {
 
     /** =======================
      *  VALIDATION numero
-     *  - obligatoire
-     *  - entier > 0
-     *  - unique dans la fiche
      ======================= */
     const validateNumeros = (candidateRows: DeviceRow[]) => {
         setNumeroError(null);
 
-        // On valide uniquement les lignes non vides (si tu veux)
         const active = candidateRows.filter((r) => !isEmptyRow(r));
 
-        // Obligatoire + entier > 0
         for (const r of active) {
             const n = Number(r.numero);
             if (!Number.isFinite(n) || Number.isNaN(n)) {
@@ -157,7 +203,6 @@ export default function ModificationPage() {
             }
         }
 
-        // Unicité
         const seen = new Set<number>();
         for (const r of active) {
             const n = Number(r.numero);
@@ -171,14 +216,49 @@ export default function ModificationPage() {
     };
 
     /** =======================
-     *  SAUVEGARDE EXPLICITE
-     *  - numero est MANUEL (pas de renumérotation auto)
+     *  SWAP POSITION (boutons à gauche)
+     ======================= */
+/** =======================
+ *  MOVE ROW (boutons à gauche)
+ *  ✅ On ne swap plus les positions "à la main"
+ *  ✅ On déplace la ligne dans le tableau puis on normalise position = 1..n
+ ======================= */
+    const normalizePositions = (list: DeviceRow[]) => {
+        return list.map((r, idx) => ({ ...r, position: idx + 1 }));
+    };
+
+    const moveRow = (rowId: string, direction: -1 | 1) => {
+        setRows((prev) => {
+            const idx = prev.findIndex((r) => r.id === rowId);
+            const to = idx + direction;
+
+            if (idx < 0 || to < 0 || to >= prev.length) return prev;
+
+            const next = [...prev];
+            const [item] = next.splice(idx, 1);
+            next.splice(to, 0, item);
+
+            const normalized = normalizePositions(next);
+
+            // ✅ positions changent => on marque tout le monde dirty
+            normalized.forEach((r) => dirtyIds.current.add(r.id));
+            setSaveState("dirty");
+
+            return normalized;
+        });
+    };
+
+    const moveUp = (rowId: string) => moveRow(rowId, -1);
+    const moveDown = (rowId: string) => moveRow(rowId, +1);
+
+
+    /** =======================
+     *  SAUVEGARDE EXPLICITE (table)
      ======================= */
     const handleSave = async () => {
         setSaveState("saving");
 
         try {
-            // ✅ Validation numero avant tout
             const validationError = validateNumeros(rows);
             if (validationError) {
                 setNumeroError(validationError);
@@ -186,71 +266,117 @@ export default function ModificationPage() {
                 return;
             }
 
-            const { data: authData, error: authError } =
-                await supabase.auth.getUser();
-
+            const { data: authData, error: authError } = await supabase.auth.getUser();
             if (authError || !authData.user) {
                 throw new Error("Utilisateur non authentifié");
             }
-
             const userId = authData.user.id;
 
             /* 1️⃣ État actuel */
             const { data: currentRows, error: fetchError } = await supabase
                 .from("record_devices")
-                .select("localisation_zone, emplacement, type_dispositif, numero")
+                .select("localisation_zone, emplacement, type_dispositif, numero, position")
                 .eq("record_id", recordId)
-                .order("numero");
+                .order("position");
 
             if (fetchError) throw fetchError;
 
             /* 2️⃣ Historique */
-            const { error: historyError } = await supabase
-                .from("record_history")
-                .insert({
-                    record_id: recordId,
-                    updated_by: userId,
-                    snapshot: {
-                        rows: currentRows ?? [],
-                        commentaire,
-                    },
-                });
+            const { error: historyError } = await supabase.from("record_history").insert({
+                record_id: recordId,
+                updated_by: userId,
+                snapshot: {
+                    rows: currentRows ?? [],
+                    commentaire,
+                },
+            });
 
-            if (historyError) {
-                console.error("❌ record_history insert failed", historyError);
-                throw historyError;
+            if (historyError) throw historyError;
+
+            const positions = rows.map((r) => Number(r.position));
+            const dup = positions.filter((p, i) => positions.indexOf(p) !== i);
+            if (dup.length) {
+                console.error("DUP POSITIONS", dup, positions);
+                throw new Error("Positions en doublon (bug reorder).");
             }
 
-            /* 3️⃣ Sauvegarde courante */
-            const payload = rows.map((r) => ({
+
+            /* 3️⃣ Sauvegarde courante (✅ positions en 2 phases pour éviter collision UNIQUE) */
+
+            // 3a) on s’assure que l’ordre local est stable
+            const sortedRows = [...rows].sort((a, b) => Number(a.position) - Number(b.position));
+
+            // 3b) on normalise en 1..n
+            const normalized = sortedRows.map((r, idx) => ({
+                ...r,
+                position: idx + 1,
+            }));
+
+            // ✅ Phase 1 : positions temporaires très hautes (évite tout conflit unique)
+            const tempPayload = normalized.map((r) => ({
                 id: r.id,
                 record_id: recordId,
                 localisation_zone: r.localisation_zone || "",
                 emplacement: r.emplacement || "",
                 type_dispositif: r.type_dispositif || "",
-                numero: Number(r.numero), // manuel, validé
+                numero: Number(r.numero),
+                position: 1000000 + Number(r.position), // <-- clé du fix
+            }));
+
+            const { error: tempErr } = await supabase
+                .from("record_devices")
+                .upsert(tempPayload, { onConflict: "id" });
+
+            if (tempErr) throw tempErr;
+
+            // ✅ Phase 2 : positions finales 1..n
+            const finalPayload = normalized.map((r) => ({
+                id: r.id,
+                record_id: recordId,
+                localisation_zone: r.localisation_zone || "",
+                emplacement: r.emplacement || "",
+                type_dispositif: r.type_dispositif || "",
+                numero: Number(r.numero),
+                position: Number(r.position),
             }));
 
             const { error: saveError } = await supabase
                 .from("record_devices")
-                .upsert(payload, { onConflict: "id" });
+                .upsert(finalPayload, { onConflict: "id" });
 
             if (saveError) throw saveError;
 
-            await supabase.from("records").update({ commentaire }).eq("id", recordId);
+            // ✅ IMPORTANT : on met aussi l’état React à jour avec les positions normalisées
+            setRows(normalized);
+
+            const { error: commentError } = await supabase
+                .from("records")
+                .update({ commentaire })
+                .eq("id", recordId);
+
+            if (commentError) throw commentError;
 
             setSaveState("saved");
             setTimeout(() => setSaveState("idle"), 1200);
-        } catch (err) {
-            console.error("❌ SAVE ERROR", err);
+        } catch (err: any) {
+            // ✅ log détaillé pour éviter les "{}"
+            const full = {
+                message: err?.message,
+                details: err?.details,
+                hint: err?.hint,
+                code: err?.code,
+                raw: err,
+            };
+            console.error("❌ SAVE ERROR (FULL)", full);
+            console.error("❌ SAVE ERROR (RAW)", err);
+            console.error("❌ SAVE ERROR (keys)", err ? Object.getOwnPropertyNames(err) : null);
+
             setSaveState("error");
         }
     };
 
     /** =======================
-     *  AJOUT DE LIGNE (numero MANUEL)
-     *  - on propose un numéro "libre" par défaut (mais tu peux le changer)
-     *  - si ta DB impose NOT NULL sur numero, il faut envoyer un numero dès l'insert
+     *  AJOUT DE LIGNE
      ======================= */
     const nextSuggestedNumero = useMemo(() => {
         const used = new Set(
@@ -258,14 +384,24 @@ export default function ModificationPage() {
                 .map((r) => Number(r.numero))
                 .filter((n) => Number.isFinite(n) && !Number.isNaN(n))
         );
-
         let n = 1;
         while (used.has(n)) n++;
         return n;
     }, [rows]);
 
+    const nextPosition = useMemo(() => {
+        const maxPos = Math.max(
+            0,
+            ...rows
+                .map((r) => Number(r.position))
+                .filter((n) => Number.isFinite(n) && !Number.isNaN(n))
+        );
+        return maxPos + 1;
+    }, [rows]);
+
     const addRow = async () => {
-        const suggested = nextSuggestedNumero;
+        const suggestedNumero = nextSuggestedNumero;
+        const position = nextPosition;
 
         const { data, error } = await supabase
             .from("record_devices")
@@ -274,13 +410,18 @@ export default function ModificationPage() {
                 localisation_zone: "",
                 emplacement: "",
                 type_dispositif: "",
-                numero: suggested, // ✅ nécessaire si numero NOT NULL
+                numero: suggestedNumero,
+                position,
             })
-            .select()
+            .select("id, record_id, localisation_zone, emplacement, type_dispositif, numero, position")
             .single();
 
         if (!error && data) {
-            setRows((prev) => [...prev, data as DeviceRow]);
+            setRows((prev) => {
+                const next = [...prev, data as DeviceRow];
+                next.sort((a, b) => Number(a.position) - Number(b.position));
+                return next;
+            });
             dirtyIds.current.add((data as any).id);
             setSaveState("dirty");
         } else {
@@ -291,9 +432,6 @@ export default function ModificationPage() {
 
     /** =======================
      *  SUPPRESSION DE LIGNE
-     *  ✅ IMPORTANT :
-     *  - on NE RENUMEROTE PLUS rien
-     *  - on supprime juste la ligne
      ======================= */
     const deleteRow = async (id: string) => {
         const { error } = await supabase.from("record_devices").delete().eq("id", id);
@@ -309,11 +447,113 @@ export default function ModificationPage() {
         setSaveState("dirty");
     };
 
+    /** =======================
+     *  ADMIN: update bandeau (records + clients)
+     *  ✅ Maintenant: tout le bandeau éditable
+     ======================= */
+    const updateMetaDraft = (key: MetaKey, value: string) => {
+        setMetaDraft((prev) => {
+            if (!prev) return prev;
+            return { ...prev, [key]: value === "" ? null : value };
+        });
+        setMetaSaveState("dirty");
+    };
+
+    const updateClientDraft = (key: ClientKey, value: string) => {
+        setMetaDraft((prev) => {
+            if (!prev) return prev;
+            const currentClient = prev.client ?? { name: "", code_client: "", city: null };
+            const nextClient = {
+                ...currentClient,
+                [key]: value === "" ? (key === "city" ? null : "") : value,
+            };
+            return { ...prev, client: nextClient };
+        });
+        setMetaSaveState("dirty");
+    };
+
+    const handleSaveMeta = async () => {
+        if (!isAdmin || !metaDraft) return;
+
+        setMetaSaveState("saving");
+
+        try {
+            // 1) update RECORDS
+            const recordPayload = {
+                groupe: metaDraft.groupe,
+                annexe_contrat_numero: metaDraft.annexe_contrat_numero,
+                date_fiche: metaDraft.date_fiche,
+            };
+
+            const { error: recErr } = await supabase
+                .from("records")
+                .update(recordPayload)
+                .eq("id", recordId);
+
+            if (recErr) throw recErr;
+
+            // 2) update CLIENTS (si client_id)
+            if (metaDraft.client_id && metaDraft.client) {
+                const clientPayload = {
+                    name: metaDraft.client.name,
+                    code_client: metaDraft.client.code_client,
+                    city: metaDraft.client.city,
+                };
+
+                const { error: cliErr } = await supabase
+                    .from("clients")
+                    .update(clientPayload)
+                    .eq("id", metaDraft.client_id);
+
+                if (cliErr) throw cliErr;
+            }
+
+            // 3) re-fetch bandeau (source de vérité)
+            const { data, error } = await supabase
+                .from("records")
+                .select(
+                    `
+                    id,
+                    client_id,
+                    groupe,
+                    annexe_contrat_numero,
+                    date_fiche,
+                    client:clients (
+                        name,
+                        code_client,
+                        city
+                    )
+                `
+                )
+                .eq("id", recordId)
+                .single();
+
+            if (error) throw error;
+
+            const updated = data as RecordMeta;
+            setRecordMeta(updated);
+            setMetaDraft(updated);
+
+            setMetaSaveState("saved");
+            setTimeout(() => setMetaSaveState("idle"), 1200);
+        } catch (err: any) {
+            const full = {
+                message: err?.message,
+                details: err?.details,
+                hint: err?.hint,
+                code: err?.code,
+                raw: err,
+            };
+            console.error("SAVE META ERROR (FULL)", full);
+            setMetaSaveState("error");
+        }
+    };
+
     if (loading) return <p>Chargement…</p>;
 
     return (
         <div>
-            {/* INFOS FICHE – lecture seule */}
+            {/* INFOS FICHE */}
             {recordMeta && (
                 <div
                     style={{
@@ -327,15 +567,100 @@ export default function ModificationPage() {
                         gap: 16,
                     }}
                 >
-                    <Info label="Raison sociale client" value={recordMeta.client?.name} />
-                    <Info label="Ville" value={recordMeta.client?.city} />
-                    <Info label="Code client" value={recordMeta.client?.code_client} />
-                    <Info label="Groupe" value={recordMeta.groupe} />
-                    <Info
-                        label="Annexe au contrat d’abonnement n°"
-                        value={recordMeta.annexe_contrat_numero}
-                    />
-                    <Info label="Date de la fiche" value={recordMeta.date_fiche} />
+                    {/* ✅ Admin: tout éditable */}
+                    {isAdmin ? (
+                        <>
+                            <InfoEditable
+                                label="Raison sociale client"
+                                value={metaDraft?.client?.name ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateClientDraft("name", v)}
+                            />
+                            <InfoEditable
+                                label="Ville"
+                                value={metaDraft?.client?.city ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateClientDraft("city", v)}
+                            />
+                            <InfoEditable
+                                label="Code client"
+                                value={metaDraft?.client?.code_client ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateClientDraft("code_client", v)}
+                            />
+
+                            <InfoEditable
+                                label="Groupe"
+                                value={metaDraft?.groupe ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateMetaDraft("groupe", v)}
+                            />
+                            <InfoEditable
+                                label="Annexe au contrat d’abonnement n°"
+                                value={metaDraft?.annexe_contrat_numero ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateMetaDraft("annexe_contrat_numero", v)}
+                            />
+                            <InfoEditable
+                                label="Date de la fiche"
+                                type="date"
+                                value={metaDraft?.date_fiche ?? ""}
+                                placeholder="—"
+                                onChange={(v) => updateMetaDraft("date_fiche", v)}
+                            />
+
+                            <div style={{ display: "flex", alignItems: "flex-end" }}>
+                                <button
+                                    type="button"
+                                    onClick={handleSaveMeta}
+                                    disabled={
+                                        metaSaveState === "saving" || metaSaveState === "idle"
+                                    }
+                                    style={{
+                                        padding: "10px 14px",
+                                        borderRadius: 8,
+                                        border: "1px solid #d1d5db",
+                                        backgroundColor:
+                                            metaSaveState === "saving" ? "#f3f4f6" : "#111827",
+                                        color: metaSaveState === "saving" ? "#111827" : "#ffffff",
+                                        cursor:
+                                            metaSaveState === "saving"
+                                                ? "not-allowed"
+                                                : metaSaveState === "idle"
+                                                ? "not-allowed"
+                                                : "pointer",
+                                        fontWeight: 700,
+                                        width: "100%",
+                                    }}
+                                    title={
+                                        metaSaveState === "dirty"
+                                            ? "Enregistrer le bandeau"
+                                            : metaSaveState === "saved"
+                                            ? "Enregistré"
+                                            : "—"
+                                    }
+                                >
+                                    {metaSaveState === "saving"
+                                        ? "Enregistrement…"
+                                        : metaSaveState === "saved"
+                                        ? "Bandeau enregistré ✓"
+                                        : "Enregistrer le bandeau"}
+                                </button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <Info label="Raison sociale client" value={recordMeta.client?.name} />
+                            <Info label="Ville" value={recordMeta.client?.city} />
+                            <Info label="Code client" value={recordMeta.client?.code_client} />
+                            <Info label="Groupe" value={recordMeta.groupe} />
+                            <Info
+                                label="Annexe au contrat d’abonnement n°"
+                                value={recordMeta.annexe_contrat_numero}
+                            />
+                            <Info label="Date de la fiche" value={recordMeta.date_fiche} />
+                        </>
+                    )}
                 </div>
             )}
 
@@ -363,16 +688,32 @@ export default function ModificationPage() {
                             padding: "10px 14px",
                             borderRadius: 8,
                             border: "1px solid #d1d5db",
-                            backgroundColor:
-                                saveState === "saving" ? "#f3f4f6" : "#111827",
+                            backgroundColor: saveState === "saving" ? "#f3f4f6" : "#111827",
                             color: saveState === "saving" ? "#111827" : "#ffffff",
-                            cursor:
-                                saveState === "saving" ? "not-allowed" : "pointer",
+                            cursor: saveState === "saving" ? "not-allowed" : "pointer",
                             fontWeight: 700,
                         }}
                     >
                         {saveState === "saving" ? "Sauvegarde…" : "Sauvegarder"}
                     </button>
+
+
+                    <button
+                    type="button"
+                    onClick={() => window.open(`/recherche/${recordId}/pdf`, "_blank")}
+                    style={{
+                        padding: "10px 14px",
+                        borderRadius: 8,
+                        border: "1px solid #d1d5db",
+                        backgroundColor: "#ffffff",
+                        cursor: "pointer",
+                        fontWeight: 700,
+                    }}
+                    >
+                    📄 Export PDF
+                    </button>
+
+
                 </div>
             </div>
 
@@ -426,6 +767,8 @@ export default function ModificationPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead style={{ backgroundColor: "#f9fafb" }}>
                         <tr>
+                            {/* ✅ colonne swap à gauche */}
+                            <Th style={{ width: "54px" }}> </Th>
                             <Th>Localisation zone</Th>
                             <Th>Emplacement du dispositif</Th>
                             <Th>Type dispositif</Th>
@@ -439,10 +782,36 @@ export default function ModificationPage() {
                             const empty = isEmptyRow(row);
 
                             return (
-                                <tr
-                                    key={row.id}
-                                    style={{ borderTop: "1px solid #e5e7eb" }}
-                                >
+                                <tr key={row.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                                    {/* ✅ boutons à gauche */}
+                                    <Td style={{ padding: "8px 10px", width: 54 }}>
+                                        <div
+                                            style={{
+                                                display: "flex",
+                                                flexDirection: "column",
+                                                gap: 6,
+                                                alignItems: "center",
+                                            }}
+                                        >
+                                            <button
+                                                type="button"
+                                                onClick={() => moveUp(row.id)}
+                                                title="Monter la ligne"
+                                                style={swapBtnStyle}
+                                            >
+                                                ↑
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => moveDown(row.id)}
+                                                title="Descendre la ligne"
+                                                style={swapBtnStyle}
+                                            >
+                                                ↓
+                                            </button>
+                                        </div>
+                                    </Td>
+
                                     <Td>
                                         <SmallInput
                                             list="localisations"
@@ -457,9 +826,7 @@ export default function ModificationPage() {
                                         <SmallInput
                                             list="emplacements"
                                             value={row.emplacement}
-                                            onChange={(v) =>
-                                                updateRow(row.id, "emplacement", v)
-                                            }
+                                            onChange={(v) => updateRow(row.id, "emplacement", v)}
                                         />
                                     </Td>
 
@@ -484,7 +851,6 @@ export default function ModificationPage() {
                                             }
                                             onChange={(v) => updateNumero(row.id, v)}
                                             placeholder={empty ? "" : "N°"}
-                                            disabled={false}
                                         />
                                     </Td>
 
@@ -532,9 +898,10 @@ export default function ModificationPage() {
                 </button>
 
                 <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>
-                    Numéro suggéré : {nextSuggestedNumero} (modifiable)
+                    Numéro suggéré : {nextSuggestedNumero} (modifiable) • Position : {nextPosition}
                 </span>
             </div>
+            <RecordPhotos recordId={recordId} isAdmin={isAdmin} />
 
             {/* COMMENTAIRE */}
             <div
@@ -593,11 +960,7 @@ function SaveBadge({ state }: { state: "idle" | "dirty" | "saving" | "saved" | "
         { text: string; bg: string; color: string }
     > = {
         idle: { text: "", bg: "", color: "" },
-        dirty: {
-            text: "Modifications non sauvegardées",
-            bg: "#FEF3C7",
-            color: "#92400E",
-        },
+        dirty: { text: "Modifications non sauvegardées", bg: "#FEF3C7", color: "#92400E" },
         saving: { text: "Sauvegarde en cours…", bg: "#DBEAFE", color: "#1D4ED8" },
         saved: { text: "Sauvegardé ✓", bg: "#DCFCE7", color: "#166534" },
         error: { text: "Erreur de sauvegarde", bg: "#FEE2E2", color: "#991B1B" },
@@ -626,24 +989,47 @@ function SaveBadge({ state }: { state: "idle" | "dirty" | "saving" | "saved" | "
 function Info({ label, value }: { label: string; value?: string | null }) {
     return (
         <div>
-            <div
-                style={{
-                    fontSize: 12,
-                    color: "#6b7280",
-                    marginBottom: 4,
-                }}
-            >
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 4 }}>{label}</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#111827" }}>{value || "—"}</div>
+        </div>
+    );
+}
+
+function InfoEditable({
+    label,
+    value,
+    onChange,
+    placeholder,
+    type = "text",
+}: {
+    label: string;
+    value: string;
+    onChange: (v: string) => void;
+    placeholder?: string;
+    type?: string;
+}) {
+    return (
+        <div>
+            <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6, fontWeight: 700 }}>
                 {label}
             </div>
-            <div
+            <input
+                type={type}
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder={placeholder}
                 style={{
+                    width: "100%",
+                    height: 36,
+                    padding: "6px 10px",
+                    borderRadius: 10,
+                    border: "1px solid #d1d5db",
                     fontSize: 14,
-                    fontWeight: 600,
-                    color: "#111827",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    fontWeight: 700,
                 }}
-            >
-                {value || "—"}
-            </div>
+            />
         </div>
     );
 }
@@ -680,12 +1066,10 @@ function NumeroInput({
     value,
     onChange,
     placeholder,
-    disabled,
 }: {
     value: string;
     onChange: (v: string) => void;
     placeholder?: string;
-    disabled?: boolean;
 }) {
     return (
         <input
@@ -693,7 +1077,6 @@ function NumeroInput({
             value={value}
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
-            disabled={disabled}
             style={{
                 width: "100%",
                 height: 34,
@@ -705,7 +1088,7 @@ function NumeroInput({
                 boxSizing: "border-box",
                 textAlign: "center",
                 fontWeight: 700,
-                backgroundColor: disabled ? "#f3f4f6" : "#ffffff",
+                backgroundColor: "#ffffff",
             }}
         />
     );
@@ -752,3 +1135,15 @@ function Td({
         </td>
     );
 }
+
+const swapBtnStyle: React.CSSProperties = {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#ffffff",
+    cursor: "pointer",
+    color: "#111827",
+    fontWeight: 900,
+    lineHeight: "28px",
+};

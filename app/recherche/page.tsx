@@ -23,7 +23,7 @@ type RecordRow = {
 const PAGE_SIZE = 10;
 
 /* =======================
-   Page
+    Page
 ======================= */
 export default function RecherchePage() {
     const [records, setRecords] = useState<RecordRow[]>([]);
@@ -65,7 +65,8 @@ export default function RecherchePage() {
 
             const { data, error } = await supabase
                 .from("records")
-                .select(`
+                .select(
+                    `
                     id,
                     date_fiche,
                     client:clients (
@@ -73,7 +74,8 @@ export default function RecherchePage() {
                         code_client,
                         city
                     )
-                `)
+                `
+                )
                 .order("created_at", { ascending: false });
 
             if (error) {
@@ -92,22 +94,66 @@ export default function RecherchePage() {
     /* =======================
         Suppression (admin)
     ======================= */
+
+
+
+    const logSupabaseError = (label: string, err: any) => {
+    console.error(label, err); // 👈 important : log direct
+
+    if (!err) return;
+
+    const props = Object.getOwnPropertyNames(err);
+    const picked: any = {};
+    for (const k of props) picked[k] = (err as any)[k];
+
+    console.error(label + " (PROPS)", picked);
+    console.error(label + " (STRINGIFY)", JSON.stringify(err));
+    };
+
     const handleDelete = async (recordId: string) => {
-        const ok = confirm(
-            "⚠️ Cette action supprimera définitivement la fiche et tout son historique.\n\nContinuer ?"
-        );
-        if (!ok) return;
+    const ok = confirm(
+        "⚠️ Cette action supprimera définitivement la fiche et tout son historique.\n\nContinuer ?"
+    );
+    if (!ok) return;
 
-        try {
-            await supabase.from("record_devices").delete().eq("record_id", recordId);
-            await supabase.from("records").delete().eq("id", recordId);
+    // 1) record_history
+    const histRes = await supabase
+        .from("record_history")
+        .delete()
+        .eq("record_id", recordId);
 
-            setRecords((prev) => prev.filter((r) => r.id !== recordId));
-            alert("✅ Fiche supprimée définitivement.");
-        } catch (err) {
-            console.error(err);
-            alert("❌ Erreur lors de la suppression.");
-        }
+    if (histRes.error) {
+        logSupabaseError("DELETE record_history ERROR", histRes.error);
+        alert("❌ Impossible de supprimer l'historique (voir console).");
+        return;
+    }
+
+    // 2) record_devices
+    const devRes = await supabase
+        .from("record_devices")
+        .delete()
+        .eq("record_id", recordId);
+
+    if (devRes.error) {
+        logSupabaseError("DELETE record_devices ERROR", devRes.error);
+        alert("❌ Impossible de supprimer les lignes (voir console).");
+        return;
+    }
+
+    // 3) records
+    const recRes = await supabase
+        .from("records")
+        .delete()
+        .eq("id", recordId);
+
+    if (recRes.error) {
+        logSupabaseError("DELETE records ERROR", recRes.error);
+        alert("❌ Impossible de supprimer la fiche (voir console).");
+        return;
+    }
+
+    setRecords((prev) => prev.filter((r) => r.id !== recordId));
+    alert("✅ Fiche supprimée définitivement.");
     };
 
     /* =======================
@@ -125,8 +171,7 @@ export default function RecherchePage() {
             const haystack = `${name} ${city}`;
 
             const textMatch =
-                textTokens.length === 0 ||
-                textTokens.every((t) => haystack.includes(t));
+                textTokens.length === 0 || textTokens.every((t) => haystack.includes(t));
 
             const codeMatch = !codeToken || code.includes(codeToken);
 
@@ -150,9 +195,7 @@ export default function RecherchePage() {
 
     return (
         <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700 }}>
-                Recherche & modification
-            </h1>
+            <h1 style={{ fontSize: 24, fontWeight: 700 }}>Recherche & modification</h1>
 
             {/* Bouton nouvelle fiche */}
             <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
@@ -172,7 +215,14 @@ export default function RecherchePage() {
             </div>
 
             {/* Recherche */}
-            <div style={{ marginTop: 24, backgroundColor: "#f5f7fa", padding: 20, borderRadius: 12 }}>
+            <div
+                style={{
+                    marginTop: 24,
+                    backgroundColor: "#f5f7fa",
+                    padding: 20,
+                    borderRadius: 12,
+                }}
+            >
                 <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
                     <div>
                         <label style={labelStyle}>Raison sociale client et ville</label>
@@ -201,41 +251,115 @@ export default function RecherchePage() {
                 {loading ? (
                     <p>Chargement...</p>
                 ) : (
-                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                        <thead>
-                            <tr>
-                                <th style={thStyle}>Client</th>
-                                <th style={thStyle}>Code</th>
-                                <th style={thStyle}>Date</th>
-                                {isAdmin && <th />}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {paginatedRecords.length === 0 ? (
+                    <>
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                            <thead>
                                 <tr>
-                                    <td colSpan={4} style={tdStyle}>Aucun résultat</td>
+                                    <th style={thStyle}>Client</th>
+                                    <th style={thStyle}>Code</th>
+                                    <th style={thStyle}>Date</th>
+                                    {/* ✅ Colonne actions visible pour tout le monde (PDF) */}
+                                    <th style={thStyle} />
                                 </tr>
-                            ) : (
-                                paginatedRecords.map((r) => (
-                                    <tr key={r.id}>
-                                        <td style={tdStyle}>
-                                            <Link href={`/recherche/${r.id}`}>
-                                                {r.client?.name ?? "Client inconnu"}
-                                                {r.client?.city && ` – ${r.client.city}`}
-                                            </Link>
+                            </thead>
+
+                            <tbody>
+                                {paginatedRecords.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={4} style={tdStyle}>
+                                            Aucun résultat
                                         </td>
-                                        <td style={tdStyle}>{r.client?.code_client ?? "-"}</td>
-                                        <td style={tdStyle}>{r.date_fiche ?? "-"}</td>
-                                        {isAdmin && (
-                                            <td style={tdStyle}>
-                                                <button onClick={() => handleDelete(r.id)}>×</button>
-                                            </td>
-                                        )}
                                     </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
+                                ) : (
+                                    paginatedRecords.map((r) => (
+                                        <tr key={r.id}>
+                                            <td style={tdStyle}>
+                                                <Link href={`/recherche/${r.id}`}>
+                                                    {r.client?.name ?? "Client inconnu"}
+                                                    {r.client?.city && ` – ${r.client.city}`}
+                                                </Link>
+                                            </td>
+
+                                            <td style={tdStyle}>{r.client?.code_client ?? "-"}</td>
+
+                                            <td style={tdStyle}>{r.date_fiche ?? "-"}</td>
+
+                                            {/* ✅ Actions: PDF + Delete (si admin) */}
+                                            <td style={tdStyle}>
+                                                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                                                    {/* ✅ Bouton PDF (accessible à tous) */}
+                                                    <Link
+                                                        href={`/recherche/${r.id}/pdf`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        title="Exporter en PDF"
+                                                        style={{
+                                                            padding: "6px 10px",
+                                                            borderRadius: 8,
+                                                            border: "1px solid #d1d5db",
+                                                            backgroundColor: "#ffffff",
+                                                            color: "#111827",
+                                                            fontWeight: 700,
+                                                            textDecoration: "none",
+                                                            lineHeight: "20px",
+                                                        }}
+                                                    >
+                                                        PDF
+                                                    </Link>
+
+                                                    {/* ✅ Bouton suppression (admin uniquement) */}
+                                                    {isAdmin && (
+                                                        <button
+                                                            onClick={() => handleDelete(r.id)}
+                                                            title="Supprimer la fiche"
+                                                            style={deleteBtnStyle}
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+
+                        {/* Pagination simple (optionnel, mais utile) */}
+                        {totalPages > 1 && (
+                            <div
+                                style={{
+                                    display: "flex",
+                                    gap: 10,
+                                    alignItems: "center",
+                                    justifyContent: "flex-end",
+                                    marginTop: 14,
+                                }}
+                            >
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                    disabled={page <= 1}
+                                    style={pagerBtnStyle(page <= 1)}
+                                >
+                                    ← Précédent
+                                </button>
+
+                                <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 700 }}>
+                                    Page {page} / {totalPages}
+                                </span>
+
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                    disabled={page >= totalPages}
+                                    style={pagerBtnStyle(page >= totalPages)}
+                                >
+                                    Suivant →
+                                </button>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
         </div>
@@ -247,5 +371,38 @@ export default function RecherchePage() {
 ======================= */
 const labelStyle = { fontSize: 13, fontWeight: 500 };
 const inputStyle = { width: "100%", padding: 10 };
-const thStyle = { textAlign: "left" as const, padding: 12 };
-const tdStyle = { padding: 12 };
+
+const thStyle = {
+    textAlign: "left" as const,
+    padding: 12,
+    fontSize: 13,
+    fontWeight: 700,
+    borderBottom: "1px solid #e5e7eb",
+};
+
+const tdStyle = {
+    padding: 12,
+    borderBottom: "1px solid #f1f5f9",
+    verticalAlign: "top" as const,
+};
+
+const deleteBtnStyle: React.CSSProperties = {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    border: "1px solid #e5e7eb",
+    backgroundColor: "#ffffff",
+    cursor: "pointer",
+    color: "#dc2626",
+    fontWeight: 900,
+    lineHeight: "30px",
+};
+
+const pagerBtnStyle = (disabled: boolean): React.CSSProperties => ({
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid #d1d5db",
+    backgroundColor: disabled ? "#f3f4f6" : "#ffffff",
+    cursor: disabled ? "not-allowed" : "pointer",
+    fontWeight: 800,
+});
