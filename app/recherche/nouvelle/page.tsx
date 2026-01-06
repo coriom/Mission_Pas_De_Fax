@@ -33,22 +33,40 @@ export default function NouvelleFichePage() {
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
+        e.preventDefault(); // ✅ TOUJOURS en premier
         setLoading(true);
         setError(null);
 
         try {
+            /* =======================
+            AUTH
+            ======================= */
+            const {
+                data: { user },
+                error: authError,
+            } = await supabase.auth.getUser();
+
+            console.log("AUTH USER =", user);
+            console.log("AUTH ERROR =", authError);
+
+            if (authError || !user) {
+                throw new Error("Utilisateur non authentifié");
+            }
+
             /* =======================
             1️⃣ Client : récupérer ou créer
             ======================= */
             let clientId: string | null = null;
 
             if (form.code_client) {
-                const { data: existingClient } = await supabase
-                    .from("clients")
-                    .select("id")
-                    .eq("code_client", form.code_client)
-                    .maybeSingle();
+                const { data: existingClient, error: existingError } =
+                    await supabase
+                        .from("clients")
+                        .select("id")
+                        .eq("code_client", form.code_client)
+                        .maybeSingle();
+
+                if (existingError) throw existingError;
 
                 if (existingClient) {
                     clientId = existingClient.id;
@@ -70,7 +88,7 @@ export default function NouvelleFichePage() {
             }
 
             /* =======================
-               2️⃣ Création de la fiche
+            2️⃣ Création de la fiche
             ======================= */
             const { data: record, error: recordError } =
                 await supabase
@@ -89,8 +107,12 @@ export default function NouvelleFichePage() {
                     .select("id")
                     .single();
 
-            if (recordError) throw recordError;
+            if (recordError) {
+                console.error("RECORD ERROR FULL =", recordError);
+                throw recordError;
+            }
 
+            // ✅ SUCCÈS
             router.push(`/recherche/${record.id}`);
         } catch (err: any) {
             console.error("SUPABASE ERROR:", err);

@@ -4,21 +4,22 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 
+/* =======================
+   Types
+======================= */
 type HistoryRow = {
-  id: string;
-  created_at: string;
-  updated_by_email: string | null;
-  record: {
     id: string;
-    client: {
-      name: string;
-      code_client: string;
-      city: string | null;
+    created_at: string;
+    updated_by_email: string | null;
+    record: {
+        id: string;
+        client: {
+            name: string;
+            code_client: string;
+            city: string | null;
+        } | null;
     } | null;
-  } | null;
 };
-
-
 
 function normalize(str: string) {
     return str
@@ -28,52 +29,55 @@ function normalize(str: string) {
         .replace(/[^a-z0-9 ]/g, "");
 }
 
-
+/* =======================
+   Page
+======================= */
 export default function HistoriquePage() {
     const [rows, setRows] = useState<HistoryRow[]>([]);
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState("");
 
     useEffect(() => {
-    const fetchHistory = async () => {
-        setLoading(true);
+        const fetchHistory = async () => {
+            setLoading(true);
+            const { data, error } = await supabase
+                .from("record_history")
+                .select(`
+                    id,
+                    created_at,
+                    updated_by:updated_by (
+                    email
+                    ),
+                    record:records (
+                    id,
+                    client:clients (
+                        name,
+                        code_client,
+                        city
+                    )
+                    )
+                `)
+                .order("created_at", { ascending: false })
+                .limit(50);
 
-        const { data, error } = await supabase
-        .from("record_history_view")
-        .select(`
-            id,
-            created_at,
-            updated_by_email,
-            record:records!left (
-            id,
-            client:clients!left (
-                name,
-                code_client,
-                city
-            )
-            )
-        `)
-        .order("created_at", { ascending: false })
-        .limit(50);
 
-        if (!error && data) {
-        setRows;
-        }
 
-        setLoading(false);
-    };
+            if (!error && data) {
+                setRows(data);
+            } else {
+                console.error("HISTORY FETCH ERROR", error);
+            }
 
-    fetchHistory();
+            setLoading(false);
+        };
+
+        fetchHistory();
     }, []);
-
-
 
     const filtered = rows.filter((row) => {
         if (!search) return true;
 
-        const tokens = normalize(search)
-            .split(" ")
-            .filter(Boolean);
+        const tokens = normalize(search).split(" ").filter(Boolean);
 
         const clientName = normalize(row.record?.client?.name ?? "");
         const city = normalize(row.record?.client?.city ?? "");
@@ -82,9 +86,8 @@ export default function HistoriquePage() {
 
         const haystack = `${clientName} ${city} ${code} ${username}`;
 
-        return tokens.every((token) => haystack.includes(token));
+        return tokens.every((t) => haystack.includes(t));
     });
-
 
     /* =======================
        RESTAURATION VERSION
@@ -95,51 +98,46 @@ export default function HistoriquePage() {
         const ok = confirm(
             "Cette action remplacera l’état actuel de la fiche par cette version.\n\nContinuer ?"
         );
-
         if (!ok) return;
 
         try {
-            // 1️⃣ Charger le snapshot
             const { data, error } = await supabase
                 .from("record_history")
                 .select("snapshot")
                 .eq("id", row.id)
                 .single();
 
-            if (error || !data) throw error;
+            if (error || !data?.snapshot?.rows) {
+                throw new Error("Snapshot invalide");
+            }
 
-            const snapshotRows = data.snapshot.rows;
+            const snapshotRows = data.snapshot.rows as any[];
 
-            // 2️⃣ Supprimer l’état actuel
             await supabase
                 .from("record_devices")
                 .delete()
                 .eq("record_id", row.record.id);
 
-            // 3️⃣ Restaurer la version
-            const payload = snapshotRows.map((r: any, idx: number) => ({
+            const payload = snapshotRows.map((r, idx) => ({
                 record_id: row.record!.id,
-                localisation_zone: r.localisation_zone,
-                emplacement: r.emplacement,
-                type_dispositif: r.type_dispositif,
+                localisation_zone: r.localisation_zone ?? "",
+                emplacement: r.emplacement ?? "",
+                type_dispositif: r.type_dispositif ?? "",
                 numero: r.numero ?? idx + 1,
             }));
 
             await supabase.from("record_devices").insert(payload);
 
-            alert("La version a été rétablie avec succès.");
+            alert("✅ Version restaurée avec succès.");
         } catch (err) {
             console.error(err);
-            alert("Erreur lors de la restauration.");
+            alert("❌ Erreur lors de la restauration.");
         }
     };
 
     return (
         <div>
-            <h1 style={{ fontSize: 24, fontWeight: 700 }}>
-                Historique
-            </h1>
-
+            <h1 style={{ fontSize: 24, fontWeight: 700 }}>Historique</h1>
             <p style={{ marginTop: 8 }}>
                 Dernières fiches clients modifiées.
             </p>
@@ -189,23 +187,13 @@ export default function HistoriquePage() {
                         <tbody>
                             {filtered.length === 0 ? (
                                 <tr>
-                                    <Td colSpan={4}>
-                                        Aucun résultat
-                                    </Td>
+                                    <Td colSpan={5}>Aucun résultat</Td>
                                 </tr>
                             ) : (
                                 filtered.map((row) => (
-                                    <tr
-                                        key={row.id}
-                                        style={{
-                                            borderTop:
-                                                "1px solid #e5e7eb",
-                                        }}
-                                    >
+                                    <tr key={row.id} style={{ borderTop: "1px solid #e5e7eb" }}>
                                         <Td>
-                                            {new Date(
-                                                row.created_at
-                                            ).toLocaleString("fr-FR")}
+                                            {new Date(row.created_at).toLocaleString("fr-FR")}
                                         </Td>
 
                                         <Td>
@@ -219,85 +207,46 @@ export default function HistoriquePage() {
                                                     }`}
                                                 />
                                             ) : (
-                                                <em style={{ color: "#6b7280" }}>Client supprimé</em>
+                                                <em style={{ color: "#6b7280" }}>
+                                                    Client supprimé
+                                                </em>
                                             )}
-
                                         </Td>
 
                                         <Td>
-                                            {row.record?.client?.code_client ? (
-                                                <HighlightText
-                                                    search={search}
-                                                    text={row.record.client.code_client}
-                                                />
-                                            ) : (
-                                                "-"
-                                            )}
-
-                                        </Td>
-                                        
-                                        <Td>
-                                            {row.updated_by_email ? (
-                                            <HighlightText
-                                                search={search}
-                                                text={row.updated_by_email}
-                                            />
-                                            ) : (
-                                            "—"
-                                            )}
-
-
+                                            {row.record?.client?.code_client ?? "-"}
                                         </Td>
 
+                                        <Td>
+                                            {row.updated_by_email ?? "—"}
+                                        </Td>
 
                                         <Td>
-                                            <div
-                                                style={{
-                                                    display: "flex",
-                                                    gap: 14,
-                                                    flexWrap: "wrap",
-                                                }}
-                                            >
-                                                {/* Fiche actuelle */}
+                                            <div style={{ display: "flex", gap: 14 }}>
                                                 {row.record && (
                                                     <Link
                                                         href={`/recherche/${row.record.id}`}
-                                                        style={{
-                                                            color: "#2563eb",
-                                                            fontWeight: 600,
-                                                            textDecoration:
-                                                                "none",
-                                                        }}
+                                                        style={{ color: "#2563eb", fontWeight: 600 }}
                                                     >
-                                                        Ouvrir la fiche
+                                                        Fiche
                                                     </Link>
                                                 )}
 
-                                                {/* Version */}
                                                 <Link
                                                     href={`/historique/${row.id}`}
-                                                    style={{
-                                                        color: "#047857",
-                                                        fontWeight: 600,
-                                                        textDecoration:
-                                                            "none",
-                                                    }}
+                                                    style={{ color: "#047857", fontWeight: 600 }}
                                                 >
-                                                    Ouvrir la version
+                                                    Version
                                                 </Link>
 
-                                                {/* Rétablir */}
                                                 <button
-                                                    onClick={() =>
-                                                        handleRestore(row)
-                                                    }
+                                                    onClick={() => handleRestore(row)}
                                                     style={{
                                                         border: "none",
                                                         background: "none",
                                                         color: "#dc2626",
                                                         fontWeight: 700,
                                                         cursor: "pointer",
-                                                        padding: 0,
                                                     }}
                                                 >
                                                     Rétablir
@@ -318,20 +267,9 @@ export default function HistoriquePage() {
 /* =======================
    UI helpers
 ======================= */
-function Th({
-    children,
-}: {
-    children: React.ReactNode;
-}) {
+function Th({ children }: { children: React.ReactNode }) {
     return (
-        <th
-            style={{
-                textAlign: "left",
-                padding: "12px",
-                fontSize: 13,
-                fontWeight: 700,
-            }}
-        >
+        <th style={{ textAlign: "left", padding: "12px", fontSize: 13, fontWeight: 700 }}>
             {children}
         </th>
     );
@@ -345,43 +283,22 @@ function Td({
     colSpan?: number;
 }) {
     return (
-        <td
-            colSpan={colSpan}
-            style={{
-                padding: "12px",
-                fontSize: 14,
-            }}
-        >
+        <td colSpan={colSpan} style={{ padding: "12px", fontSize: 14 }}>
             {children}
         </td>
     );
 }
 
-function HighlightText({
-    text,
-    search,
-}: {
-    text: string;
-    search: string;
-}) {
+function HighlightText({ text, search }: { text: string; search: string }) {
     if (!search) return <>{text}</>;
 
-    const normalizedSearch = search
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "");
-
+    const normalizedSearch = normalize(search);
     const regex = new RegExp(`(${normalizedSearch})`, "gi");
 
     return (
         <>
             {text.split(regex).map((part, i) =>
-                regex.test(
-                    part
-                        .toLowerCase()
-                        .normalize("NFD")
-                        .replace(/[\u0300-\u036f]/g, "")
-                ) ? (
+                normalize(part).includes(normalizedSearch) ? (
                     <mark
                         key={i}
                         style={{
@@ -399,4 +316,3 @@ function HighlightText({
         </>
     );
 }
-

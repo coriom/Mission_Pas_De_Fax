@@ -35,17 +35,15 @@ export default function RecherchePage() {
     const [page, setPage] = useState(1);
     const [isAdmin, setIsAdmin] = useState(false);
 
-
     function normalize(str: string) {
-    return str
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9 ]/g, "");
+        return str
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^a-z0-9 ]/g, "");
     }
 
     useEffect(() => {
-        
         const fetchRole = async () => {
             const {
                 data: { user },
@@ -62,8 +60,6 @@ export default function RecherchePage() {
             setIsAdmin(profile?.role === "admin");
         };
 
-        fetchRole();
-        
         const fetchRecords = async () => {
             setLoading(true);
 
@@ -80,59 +76,45 @@ export default function RecherchePage() {
                 `)
                 .order("created_at", { ascending: false });
 
-            if (!error && data) {
-                setRecords;
+            if (error) {
+                console.error("FETCH RECORDS ERROR", error);
+            } else {
+                setRecords(data as RecordRow[]);
             }
 
             setLoading(false);
         };
 
+        fetchRole();
         fetchRecords();
     }, []);
 
     /* =======================
-        Filtrage temps réel
+        Suppression (admin)
     ======================= */
-        const handleDelete = async (recordId: string) => {
-            
-            const ok = confirm(
-                    "⚠️ Cette action supprimera définitivement la fiche et tout son historique.\n\nContinuer ?"
-                );
+    const handleDelete = async (recordId: string) => {
+        const ok = confirm(
+            "⚠️ Cette action supprimera définitivement la fiche et tout son historique.\n\nContinuer ?"
+        );
+        if (!ok) return;
 
-                if (!ok) return;
+        try {
+            await supabase.from("record_devices").delete().eq("record_id", recordId);
+            await supabase.from("records").delete().eq("id", recordId);
 
+            setRecords((prev) => prev.filter((r) => r.id !== recordId));
+            alert("✅ Fiche supprimée définitivement.");
+        } catch (err) {
+            console.error(err);
+            alert("❌ Erreur lors de la suppression.");
+        }
+    };
 
-                try {
-
-                    // 2️⃣ Supprimer les dispositifs
-                    await supabase
-                        .from("record_devices")
-                        .delete()
-                        .eq("record_id", recordId);
-
-                    // 3️⃣ Supprimer la fiche
-                    await supabase
-                        .from("records")
-                        .delete()
-                        .eq("id", recordId);
-
-                    // 4️⃣ Mise à jour UI
-                    setRecords((prev) =>
-                        prev.filter((r) => r.id !== recordId)
-                    );
-
-                    alert("✅ Fiche supprimée définitivement.");
-                } catch (err) {
-                    console.error(err);
-                    alert("❌ Erreur lors de la suppression.");
-                }
-            };
-
+    /* =======================
+        Filtrage
+    ======================= */
     const filteredRecords = useMemo(() => {
-        const textTokens = normalize(searchText)
-            .split(" ")
-            .filter(Boolean);
-
+        const textTokens = normalize(searchText).split(" ").filter(Boolean);
         const codeToken = normalize(searchCode);
 
         return records.filter((item) => {
@@ -144,17 +126,14 @@ export default function RecherchePage() {
 
             const textMatch =
                 textTokens.length === 0 ||
-                textTokens.every((token) => haystack.includes(token));
+                textTokens.every((t) => haystack.includes(t));
 
-            const codeMatch =
-                !codeToken || code.includes(codeToken);
+            const codeMatch = !codeToken || code.includes(codeToken);
 
             return textMatch && codeMatch;
         });
     }, [records, searchText, searchCode]);
 
-
-    /* Reset page quand on tape */
     useEffect(() => {
         setPage(1);
     }, [searchText, searchCode]);
@@ -176,13 +155,7 @@ export default function RecherchePage() {
             </h1>
 
             {/* Bouton nouvelle fiche */}
-            <div
-                style={{
-                    marginTop: 16,
-                    display: "flex",
-                    justifyContent: "flex-end",
-                }}
-            >
+            <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
                 <Link
                     href="/recherche/nouvelle"
                     style={{
@@ -198,30 +171,12 @@ export default function RecherchePage() {
                 </Link>
             </div>
 
-            {/* Barre de recherche */}
-            <div
-                style={{
-                    marginTop: 24,
-                    backgroundColor: "#f5f7fa",
-                    padding: 20,
-                    borderRadius: 12,
-                    border: "1px solid #e5e7eb",
-                }}
-            >
-                <div
-                    style={{
-                        display: "grid",
-                        gridTemplateColumns: "2fr 1fr",
-                        gap: 16,
-                    }}
-                >
+            {/* Recherche */}
+            <div style={{ marginTop: 24, backgroundColor: "#f5f7fa", padding: 20, borderRadius: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
                     <div>
-                        <label style={labelStyle}>
-                            Raison sociale client et ville
-                        </label>
+                        <label style={labelStyle}>Raison sociale client et ville</label>
                         <input
-                            type="text"
-                            placeholder="Ex : Collège Camille Claudel – Villepinte"
                             value={searchText}
                             onChange={(e) => setSearchText(e.target.value)}
                             style={inputStyle}
@@ -231,8 +186,6 @@ export default function RecherchePage() {
                     <div>
                         <label style={labelStyle}>Code client</label>
                         <input
-                            type="text"
-                            placeholder="CLxxxxxx"
                             value={searchCode}
                             onChange={(e) => setSearchCode(e.target.value)}
                             style={inputStyle}
@@ -243,174 +196,46 @@ export default function RecherchePage() {
 
             {/* Résultats */}
             <div style={{ marginTop: 32 }}>
-                <h2
-                    style={{
-                        fontSize: 18,
-                        fontWeight: 600,
-                        marginBottom: 12,
-                    }}
-                >
-                    Résultats
-                </h2>
+                <h2 style={{ fontSize: 18, fontWeight: 600 }}>Résultats</h2>
 
                 {loading ? (
                     <p>Chargement...</p>
                 ) : (
-                    <>
-                        <table
-                            style={{
-                                width: "100%",
-                                borderCollapse: "collapse",
-                                backgroundColor: "#ffffff",
-                                border: "1px solid #e5e7eb",
-                                borderRadius: 8,
-                                overflow: "hidden",
-                            }}
-                        >
-                            <thead style={{ backgroundColor: "#f9fafb" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead>
+                            <tr>
+                                <th style={thStyle}>Client</th>
+                                <th style={thStyle}>Code</th>
+                                <th style={thStyle}>Date</th>
+                                {isAdmin && <th />}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {paginatedRecords.length === 0 ? (
                                 <tr>
-                                    <th style={thStyle}>Client</th>
-                                    <th style={thStyle}>Code client</th>
-                                    <th style={thStyle}>Date</th>
-                                    {isAdmin && <th style={thStyle}></th>}
+                                    <td colSpan={4} style={tdStyle}>Aucun résultat</td>
                                 </tr>
-                            </thead>
-                            <tbody>
-                                {paginatedRecords.length === 0 ? (
-                                    <tr>
-                                        <td style={tdStyle} colSpan={3}>
-                                            Aucun résultat
+                            ) : (
+                                paginatedRecords.map((r) => (
+                                    <tr key={r.id}>
+                                        <td style={tdStyle}>
+                                            <Link href={`/recherche/${r.id}`}>
+                                                {r.client?.name ?? "Client inconnu"}
+                                                {r.client?.city && ` – ${r.client.city}`}
+                                            </Link>
                                         </td>
+                                        <td style={tdStyle}>{r.client?.code_client ?? "-"}</td>
+                                        <td style={tdStyle}>{r.date_fiche ?? "-"}</td>
+                                        {isAdmin && (
+                                            <td style={tdStyle}>
+                                                <button onClick={() => handleDelete(r.id)}>×</button>
+                                            </td>
+                                        )}
                                     </tr>
-                                ) : (
-                                    filteredRecords.map((item) => (
-                                        <tr
-                                            key={item.id}
-                                            style={{
-                                                borderTop:
-                                                    "1px solid #e5e7eb",
-                                            }}
-                                        >
-                                            <td style={tdStyle}>
-                                                <Link
-                                                    href={`/recherche/${item.id}`}
-                                                    style={{
-                                                        color: "#2563eb",
-                                                        textDecoration:
-                                                            "none",
-                                                        fontWeight: 500,
-                                                    }}
-                                                >
-                                                    {item.client ? (
-                                                        <>
-                                                            {highlight(
-                                                                item.client.name,
-                                                                searchText
-                                                            )}
-                                                            {item.client.city && (
-                                                                <>
-                                                                    {" – "}
-                                                                    {highlight(
-                                                                        item.client.city,
-                                                                        searchText
-                                                                    )}
-                                                                </>
-                                                            )}
-                                                        </>
-                                                    ) : (
-                                                        "Client inconnu"
-                                                    )}
-                                                </Link>
-                                            </td>
-                                            <td style={tdStyle}>
-                                                {highlight(
-                                                    item.client?.code_client ??
-                                                        "-",
-                                                    searchCode
-                                                )}
-                                            </td>
-                                            <td style={tdStyle}>
-                                                {item.date_fiche ?? "-"}
-                                            </td>
-                                        
-
-
-                                            {isAdmin && (
-                                                <td
-                                                    style={{
-                                                        ...tdStyle,
-                                                        textAlign: "center",
-                                                        width: 44,
-                                                    }}
-                                                >
-                                                    <button
-                                                        onClick={() => handleDelete(item.id)}
-                                                        title="Supprimer définitivement"
-                                                        style={{
-                                                            width: 30,
-                                                            height: 30,
-                                                            borderRadius: 8,
-                                                            border: "1px solid #e5e7eb",
-                                                            backgroundColor: "#ffffff",
-                                                            cursor: "pointer",
-                                                            color: "#dc2626",
-                                                            fontWeight: 700,
-                                                            lineHeight: "28px",
-                                                        }}
-                                                    >
-                                                        ×
-                                                    </button>
-                                                </td>
-                                            )}
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
-
-                        {/* Pagination */}
-                        {totalPages > 1 && (
-                            <div
-                                style={{
-                                    marginTop: 16,
-                                    display: "flex",
-                                    justifyContent: "center",
-                                    gap: 8,
-                                }}
-                            >
-                                <button
-                                    disabled={page === 1}
-                                    onClick={() =>
-                                        setPage((p) => p - 1)
-                                    }
-                                    style={paginationButton(page === 1)}
-                                >
-                                    ← Précédent
-                                </button>
-
-                                <span
-                                    style={{
-                                        padding: "6px 10px",
-                                        fontSize: 14,
-                                    }}
-                                >
-                                    Page {page} / {totalPages}
-                                </span>
-
-                                <button
-                                    disabled={page === totalPages}
-                                    onClick={() =>
-                                        setPage((p) => p + 1)
-                                    }
-                                    style={paginationButton(
-                                        page === totalPages
-                                    )}
-                                >
-                                    Suivant →
-                                </button>
-                            </div>
-                        )}
-                    </>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
                 )}
             </div>
         </div>
@@ -418,73 +243,9 @@ export default function RecherchePage() {
 }
 
 /* =======================
-   Utils
-======================= */
-function highlight(text: string, query: string) {
-    if (!query) return text;
-
-    const regex = new RegExp(`(${query})`, "gi");
-    const parts = text.split(regex);
-
-    return parts.map((part, index) =>
-        regex.test(part) ? (
-            <mark
-                key={index}
-                style={{
-                    backgroundColor: "#FEF08A",
-                    padding: "0 2px",
-                    borderRadius: 4,
-                }}
-            >
-                {part}
-            </mark>
-        ) : (
-            part
-        )
-    );
-}
-
-function paginationButton(disabled: boolean) {
-    return {
-        padding: "6px 12px",
-        borderRadius: 6,
-        border: "1px solid #d1d5db",
-        backgroundColor: disabled ? "#f3f4f6" : "#ffffff",
-        cursor: disabled ? "not-allowed" : "pointer",
-        fontSize: 14,
-    };
-}
-
-/* =======================
    Styles
 ======================= */
-const labelStyle = {
-    display: "block",
-    fontSize: 13,
-    fontWeight: 500,
-    marginBottom: 6,
-    color: "#374151",
-};
-
-const inputStyle = {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: "1px solid #d1d5db",
-    fontSize: 14,
-    outline: "none",
-};
-
-const thStyle = {
-    textAlign: "left" as const,
-    padding: "12px",
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#374151",
-};
-
-const tdStyle = {
-    padding: "12px",
-    fontSize: 14,
-    color: "#111827",
-};
+const labelStyle = { fontSize: 13, fontWeight: 500 };
+const inputStyle = { width: "100%", padding: 10 };
+const thStyle = { textAlign: "left" as const, padding: 12 };
+const tdStyle = { padding: 12 };
