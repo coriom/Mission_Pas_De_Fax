@@ -7,17 +7,21 @@ import { supabase } from "@/lib/supabaseClient";
 /* =======================
    Types
 ======================= */
+
+// ✅ On ne récupère plus record + client en select imbriqué (ça sortait en tableaux et cassait le build Vercel)
 type HistoryDbRow = {
     id: string;
     created_at: string;
-    updated_by: string | null; // ✅ UUID user
-    record: {
-        id: string;
-        client: {
-            name: string;
-            code_client: string;
-            city: string | null;
-        } | null;
+    updated_by: string | null; // UUID user
+    record_id: string | null;  // ✅ clé de la fiche
+};
+
+type RecordRow = {
+    id: string;
+    client: {
+        name: string;
+        code_client: string;
+        city: string | null;
     } | null;
 };
 
@@ -62,29 +66,14 @@ export default function HistoriquePage() {
             setLoading(true);
 
             try {
-                // 1) On récupère l’historique + fiche + client (SANS email)
+                // 1) Historique "plat" (pas de join imbriqué -> évite le problème de types [])
                 const { data, error } = await supabase
                     .from("record_history")
-                    .select(
-                        `
-                        id,
-                        created_at,
-                        updated_by,
-                        record:records (
-                            id,
-                            client:clients (
-                                name,
-                                code_client,
-                                city
-                            )
-                        )
-                    `
-                    )
+                    .select("id, created_at, updated_by, record_id")
                     .order("created_at", { ascending: false })
                     .limit(50);
 
                 if (error) {
-                    // ✅ log détaillé (évite les "{}")
                     console.error("HISTORY FETCH ERROR (FULL)", {
                         message: error.message,
                         details: (error as any).details,
@@ -93,18 +82,17 @@ export default function HistoriquePage() {
                         raw: error,
                     });
                     setRows([]);
-                    setLoading(false);
                     return;
                 }
 
-                const history = (data ?? []) as HistoryDbRow[];
+                const history: HistoryDbRow[] = (data ?? []) as any;
 
-                // 2) On récupère les emails via profiles (si possible)
+                // 2) Emails via profiles
                 const userIds = Array.from(
                     new Set(history.map((r) => r.updated_by).filter(Boolean))
                 ) as string[];
 
-                let emailById = new Map<string, string | null>();
+                const emailById = new Map<string, string | null>();
 
                 if (userIds.length > 0) {
                     const { data: profiles, error: profErr } = await supabase
@@ -128,15 +116,53 @@ export default function HistoriquePage() {
                     }
                 }
 
-                // 3) On reconstruit les lignes affichées
-                const hydrated: HistoryRow[] = history.map((r) => ({
-                    id: r.id,
-                    created_at: r.created_at,
-                    updated_by: r.updated_by ?? null,
-                    updated_by_email: r.updated_by
-                        ? emailById.get(r.updated_by) ?? null
-                        : null,
-                    record: r.record ?? null,
+                // 3) Records + clients en 2e requête (contrôle de forme -> client = objet ou null)
+                const recordIds = Array.from(
+                    new Set(history.map((h) => h.record_id).filter(Boolean))
+                ) as string[];
+
+                const recordById = new Map<string, RecordRow>();
+
+                if (recordIds.length > 0) {
+                    const { data: recs, error: recErr } = await supabase
+                        .from("records")
+                        .select(
+                            `
+                            id,
+                            client:clients (
+                                name,
+                                code_client,
+                                city
+                            )
+                        `
+                        )
+                        .in("id", recordIds);
+
+                    if (recErr) {
+                        console.error("RECORDS FETCH ERROR (FULL)", {
+                            message: recErr.message,
+                            details: (recErr as any).details,
+                            hint: (recErr as any).hint,
+                            code: (recErr as any).code,
+                            raw: recErr,
+                        });
+                    } else {
+                        (recs ?? []).forEach((r: any) => {
+                            recordById.set(r.id, {
+                                id: r.id,
+                                client: r.client ?? null,
+                            });
+                        });
+                    }
+                }
+
+                // 4) Hydratation finale
+                const hydrated: HistoryRow[] = history.map((h) => ({
+                    id: h.id,
+                    created_at: h.created_at,
+                    updated_by: h.updated_by ?? null,
+                    updated_by_email: h.updated_by ? emailById.get(h.updated_by) ?? null : null,
+                    record: h.record_id ? recordById.get(h.record_id) ?? null : null,
                 }));
 
                 setRows(hydrated);
@@ -203,8 +229,7 @@ export default function HistoriquePage() {
 
             if (delErr) throw delErr;
 
-            // 2) restore
-            // ✅ si tu as maintenant `position`, on la restaure aussi
+            // 2) restore (avec position si présent)
             const payload = snapshotRows.map((r: any, idx: number) => ({
                 record_id: row.record!.id,
                 localisation_zone: r.localisation_zone ?? "",
@@ -214,10 +239,7 @@ export default function HistoriquePage() {
                 position: r.position ?? idx + 1,
             }));
 
-            const { error: insErr } = await supabase
-                .from("record_devices")
-                .insert(payload);
-
+            const { error: insErr } = await supabase.from("record_devices").insert(payload);
             if (insErr) throw insErr;
 
             alert("✅ Version restaurée avec succès.");
@@ -286,13 +308,8 @@ export default function HistoriquePage() {
                                 </tr>
                             ) : (
                                 filtered.map((row) => (
-                                    <tr
-                                        key={row.id}
-                                        style={{ borderTop: "1px solid #e5e7eb" }}
-                                    >
-                                        <Td>
-                                            {new Date(row.created_at).toLocaleString("fr-FR")}
-                                        </Td>
+                                    <tr key={row.id} style={{ borderTop: "1px solid #e5e7eb" }}>
+                                        <Td>{new Date(row.created_at).toLocaleString("fr-FR")}</Td>
 
                                         <Td>
                                             {row.record?.client ? (
@@ -310,7 +327,6 @@ export default function HistoriquePage() {
                                         </Td>
 
                                         <Td>{row.record?.client?.code_client ?? "-"}</Td>
-
 
                                         <Td>
                                             <div style={{ display: "flex", gap: 14 }}>

@@ -13,22 +13,33 @@ type DeviceRow = {
   position: number;
 };
 
+type ClientRow = {
+  name: string;
+  code_client: string;
+  city: string | null;
+};
+
+type RecordDbRow = {
+  id: string;
+  client_id: string | null;
+  commentaire: string | null;
+  groupe: string | null;
+  annexe_contrat_numero: string | null;
+  date_fiche: string | null;
+};
+
 type RecordMeta = {
   id: string;
   commentaire: string | null;
   groupe: string | null;
   annexe_contrat_numero: string | null;
   date_fiche: string | null;
-  client: {
-    name: string;
-    code_client: string;
-    city: string | null;
-  } | null;
+  client: ClientRow | null;
 };
 
 export default function PdfPage() {
-  const params = useParams<{ id: string }>();
-  const recordId = params.id;
+  const params = useParams();
+  const recordId = String((params as any)?.id ?? "");
 
   const [meta, setMeta] = useState<RecordMeta | null>(null);
   const [rows, setRows] = useState<DeviceRow[]>([]);
@@ -37,55 +48,77 @@ export default function PdfPage() {
   const exportDate = useMemo(() => new Date(), []);
 
   useEffect(() => {
+    if (!recordId) return;
+
     const fetchAll = async () => {
       setLoading(true);
 
-      // 1) Bandeau + commentaire
-      const { data: metaData, error: metaError } = await supabase
-        .from("records")
-        .select(
-          `
-          id,
-          commentaire,
-          groupe,
-          annexe_contrat_numero,
-          date_fiche,
-          client:clients (
-            name,
-            code_client,
-            city
-          )
-        `
-        )
-        .eq("id", recordId)
-        .single();
+      try {
+        // 1) Record (sans join client pour éviter les types "client: []" en prod)
+        const { data: rec, error: recErr } = await supabase
+          .from("records")
+          .select("id, client_id, commentaire, groupe, annexe_contrat_numero, date_fiche")
+          .eq("id", recordId)
+          .single();
 
-      if (metaError) {
-        console.error("PDF FETCH META ERROR", metaError);
+        if (recErr) throw recErr;
+        const recRow = rec as unknown as RecordDbRow;
+
+        // 2) Client (si client_id)
+        let client: ClientRow | null = null;
+
+        if (recRow.client_id) {
+          const { data: cli, error: cliErr } = await supabase
+            .from("clients")
+            .select("name, code_client, city")
+            .eq("id", recRow.client_id)
+            .single();
+
+          if (cliErr) {
+            // on ne bloque pas le PDF si le client n'est pas trouvable
+            console.error("PDF FETCH CLIENT ERROR", cliErr);
+          } else {
+            client = (cli as unknown as ClientRow) ?? null;
+          }
+        }
+
+        // ✅ On construit l'objet meta explicitement (plus de `as RecordMeta`)
+        setMeta({
+          id: recRow.id,
+          commentaire: recRow.commentaire,
+          groupe: recRow.groupe,
+          annexe_contrat_numero: recRow.annexe_contrat_numero,
+          date_fiche: recRow.date_fiche,
+          client,
+        });
+
+        // 3) Lignes
+        const { data: devices, error: devErr } = await supabase
+          .from("record_devices")
+          .select("id, localisation_zone, emplacement, type_dispositif, numero, position")
+          .eq("record_id", recordId)
+          .order("position", { ascending: true });
+
+        if (devErr) throw devErr;
+
+        setRows(((devices ?? []) as unknown) as DeviceRow[]);
+
         setLoading(false);
-        return;
-      }
 
-      setMeta(metaData as RecordMeta);
-
-      // 2) Lignes
-      const { data: devices, error: devError } = await supabase
-        .from("record_devices")
-        .select("id, localisation_zone, emplacement, type_dispositif, numero, position")
-        .eq("record_id", recordId)
-        .order("position", { ascending: true });
-
-      if (devError) {
-        console.error("PDF FETCH DEVICES ERROR", devError);
+        // 4) Print (petit délai pour laisser le DOM se peindre)
+        setTimeout(() => window.print(), 250);
+      } catch (err: any) {
+        console.error("PDF FETCH ERROR (FULL)", {
+          message: err?.message,
+          details: err?.details,
+          hint: err?.hint,
+          code: err?.code,
+          raw: err,
+        });
+        setMeta(null);
+        setRows([]);
         setLoading(false);
-        return;
       }
-
-      setRows((devices as DeviceRow[]) ?? []);
-      setLoading(false);
-
-      // 3) Print (petit délai pour laisser le DOM se peindre)
-      setTimeout(() => window.print(), 250);
     };
 
     fetchAll();
@@ -95,7 +128,6 @@ export default function PdfPage() {
   if (!meta) return <p style={{ padding: 20 }}>Impossible de générer le PDF.</p>;
 
   return (
-    // ✅ wrapper: on imprime uniquement ce bloc, et on cache le reste (navbar incluse) en CSS print
     <div className="pdfRoot">
       <style>{printCss}</style>
 
@@ -143,9 +175,7 @@ export default function PdfPage() {
         {/* Commentaire */}
         <section className="section">
           <h2 className="h2">Commentaire</h2>
-          <div className="commentBox">
-            {meta.commentaire?.trim() ? meta.commentaire : "—"}
-          </div>
+          <div className="commentBox">{meta.commentaire?.trim() ? meta.commentaire : "—"}</div>
         </section>
 
         {/* Tableau */}
