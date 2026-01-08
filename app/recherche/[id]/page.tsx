@@ -98,6 +98,7 @@ export default function ModificationPage() {
 
   // Pour l'UI: erreurs de validation (numero manuel)
   const [numeroError, setNumeroError] = useState<string | null>(null);
+  const [photoDeleteMode, setPhotoDeleteMode] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -891,8 +892,14 @@ export default function ModificationPage() {
         </span>
       </div>
 
+
+
+
+
+
       {/* PHOTOS */}
       <RecordPhotos recordId={recordId} isAdmin={isAdmin} />
+
 
       {/* COMMENTAIRE */}
       <div
