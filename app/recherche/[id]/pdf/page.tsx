@@ -60,15 +60,16 @@ type PdfPhotoItem = {
 const PHOTO_BUCKET = "record-photos";
 
 /**
- * ✅ Objectif:
- * - Inclure les photos en bas du PDF
- * - Forcer des images "grandes" et homogènes (même taille visuelle)
- * - Éviter un PDF sans images (préchargement best-effort)
+ * ✅ Objectif (modif demandée):
+ * - En impression: chaque photo prend (presque) toute la page A4 (max possible)
+ * - On force une hauteur "page" en print + 1 colonne
+ * - On garde un rendu propre même si ratios différents (object-fit: contain ou cover)
  *
- * Choix UI:
- * - grille 2 colonnes (écran)
- * - en print: 1 colonne + images plus grandes
- * - recadrage: object-fit: cover (toutes grandes, homogènes)
+ * Choix:
+ * - Écran: grille 2 colonnes avec cadres homogènes
+ * - Print: 1 colonne, et chaque photo devient un "slide" (un bloc page)
+ * - Pour remplir un max sans couper: object-fit: contain (pas de recadrage)
+ *   -> Si tu veux vraiment FULL BLEED (recadrage), passe à cover dans le CSS print (commenté plus bas).
  */
 export default function PdfPage() {
   const params = useParams();
@@ -220,7 +221,7 @@ export default function PdfPage() {
       printRequestedRef.current = true;
 
       // best effort: précharge les images (évite PDF sans photos)
-      await preloadImages(printablePhotos, 3500);
+      await preloadImages(printablePhotos, 6000);
 
       // petit délai pour laisser le DOM se peindre
       setTimeout(() => window.print(), 250);
@@ -319,8 +320,8 @@ export default function PdfPage() {
           </table>
         </section>
 
-        {/* ✅ PHOTOS en bas du PDF */}
-        <section className="section">
+        {/* ✅ PHOTOS */}
+        <section className="section photosSection">
           <h2 className="h2">Photos</h2>
 
           {printablePhotos.length === 0 ? (
@@ -480,19 +481,18 @@ const printCss = `
   page-break-inside: avoid;
 }
 
-/* ✅ cadre fixe => images “grandes” et homogènes */
+/* ✅ écran: cadre fixe (homogène) */
 .photoImgWrap{
   width:100%;
-  height: 320px;           /* ajuste ici: 260 / 320 / 380 */
+  height: 360px;
   background:#f9fafb;
   display:block;
 }
 
-/* ✅ cover => toutes les images remplissent, même si qualité/ratio différents */
 .photoImg{
   width:100%;
   height:100%;
-  object-fit: cover;       /* cover = recadrage */
+  object-fit: cover;
   object-position: center;
   display:block;
 }
@@ -516,8 +516,13 @@ const printCss = `
   word-break: break-word;
 }
 
-/* Print */
-@page { size: A4 portrait; margin: 12mm; }
+/* ======================
+   PRINT (A4)
+   Objectif: max taille
+====================== */
+
+/* ✅ marges réduites pour gagner en taille (tu peux mettre 4mm si imprimante OK) */
+@page { size: A4 portrait; margin: 6mm; }
 
 @media print {
   /* ✅ clé: on cache tout le document, puis on ré-affiche uniquement .printArea */
@@ -547,16 +552,53 @@ const printCss = `
   tr { break-inside: avoid; page-break-inside: avoid; }
   thead { display: table-header-group; }
 
-  /* ✅ print: 1 colonne + images encore plus grandes */
+  /* ✅ en print: 1 colonne */
   .photoGrid{
     grid-template-columns: 1fr;
-  }
-  .photoImgWrap{
-    height: 420px; /* ajuste ici si besoin */
+    gap: 0;
   }
 
-  /* photos: éviter qu’une photo soit coupée entre 2 pages */
-  .photoCard{ break-inside: avoid; page-break-inside: avoid; }
+  /* ✅ chaque photo = "page" (un bloc par page) */
+  .photoCard{
+    border: none;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    /* force une nouvelle page après chaque photo (sauf si navigateur ignore) */
+    page-break-after: always;
+    break-after: page;
+    margin: 0;
+  }
+
+  /* ✅ on retire le titre "Photos" de la 2e page si tu veux le garder uniquement une fois.
+     (ici on le garde, mais tu peux mettre: display:none) */
+  /* .photosSection .h2 { display:none; } */
+
+  /* ✅ image quasi pleine page:
+     - 100vh en print marche bien dans Chrome/Edge
+     - on retire l'espace légende en dessous pour max place */
+  .photoCaption{
+    padding: 4mm 0 0 0;
+    border-top: none;
+    font-size: 11px;
+  }
+
+  /* ✅ le wrap prend quasi toute la hauteur de page imprimable */
+  .photoImgWrap{
+    width: 100%;
+    height: 90vh;  /* <-- MAX visuel: augmente/diminue (85vh..95vh) selon rendu */
+    background: #ffffff;
+  }
+
+  /* ✅ contain = pas de recadrage, max possible sans couper */
+  .photoImg{
+    object-fit: contain;
+    background: #ffffff;
+  }
+
+  /* 🔥 Si tu veux FULL BLEED (max mais recadrage), remplace par:
+     .photoImg{ object-fit: cover; } */
+  
+  /* sécurité anti-coupe */
   img{ break-inside: avoid; page-break-inside: avoid; }
 }
 `;
