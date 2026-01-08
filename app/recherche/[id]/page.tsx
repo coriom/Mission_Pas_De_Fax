@@ -360,7 +360,7 @@ export default function ModificationPage() {
         localisation_zone: r.localisation_zone || "",
         emplacement: r.emplacement || "",
         type_dispositif: r.type_dispositif || "",
-        numero: Number(r.numero),
+        numero: (r.numero ?? "").trim(),
         position: Number(r.position),
       }));
 
@@ -1045,7 +1045,7 @@ function SmallInput({ list, value, onChange }: { list: string; value: string; on
 function NumeroInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <input
-      inputMode="numeric"
+      inputMode="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
