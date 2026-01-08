@@ -12,7 +12,7 @@ type DeviceRow = {
   localisation_zone: string;
   emplacement: string;
   type_dispositif: string;
-  numero: number; // ✅ manuel
+  numero: string | null; // ✅ manuel
   position: number; // ✅ ordre d’affichage
 };
 
@@ -213,9 +213,9 @@ export default function ModificationPage() {
    *  MODIFICATION LOCAL (numero manuel)
    ======================= */
   const updateNumero = (id: string, value: string) => {
-    const parsed = value.trim() === "" ? NaN : Number(value);
-
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, numero: parsed as any } : r)));
+    setRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, numero: value } : r))
+    );
 
     dirtyIds.current.add(id);
     setSaveState("dirty");
@@ -230,26 +230,20 @@ export default function ModificationPage() {
     const active = candidateRows.filter((r) => !isEmptyRow(r));
 
     for (const r of active) {
-      const n = Number(r.numero);
-      if (!Number.isFinite(n) || Number.isNaN(n)) {
-        return "⚠️ Le champ N° est obligatoire pour chaque ligne non vide.";
-      }
-      if (!Number.isInteger(n) || n <= 0) {
-        return "⚠️ Le champ N° doit être un entier positif (ex: 1, 2, 3…).";
-      }
+      const n = (r.numero ?? "").trim();
+      if (!n) return "⚠️ Le champ N° est obligatoire pour chaque ligne non vide.";
     }
 
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     for (const r of active) {
-      const n = Number(r.numero);
-      if (seen.has(n)) {
-        return "⚠️ Deux lignes ont le même N°. Merci de mettre des numéros uniques.";
-      }
+      const n = (r.numero ?? "").trim().toUpperCase();
+      if (seen.has(n)) return "⚠️ Deux lignes ont le même N°. Merci de mettre des numéros uniques.";
       seen.add(n);
     }
 
     return null;
   };
+
 
   /** =======================
    *  MOVE ROW (boutons à gauche)
@@ -349,7 +343,7 @@ export default function ModificationPage() {
         localisation_zone: r.localisation_zone || "",
         emplacement: r.emplacement || "",
         type_dispositif: r.type_dispositif || "",
-        numero: Number(r.numero),
+        numero: (r.numero ?? "").trim(),
         position: 1000000 + Number(r.position), // <-- clé du fix
       }));
 
@@ -429,7 +423,7 @@ export default function ModificationPage() {
   }, [rows]);
 
   const addRow = async () => {
-    const suggestedNumero = nextSuggestedNumero;
+    const suggestedNumero = String(nextPosition);
     const position = nextPosition;
 
     const { data, error } = await supabase
@@ -836,9 +830,7 @@ export default function ModificationPage() {
                   {/* ✅ NUMERO MANUEL */}
                   <Td style={{ textAlign: "center" }}>
                     <NumeroInput
-                      value={
-                        Number.isFinite(Number(row.numero)) && !Number.isNaN(Number(row.numero)) ? String(row.numero) : ""
-                      }
+                      value={(row.numero ?? "")}
                       onChange={(v) => updateNumero(row.id, v)}
                       placeholder={empty ? "" : "N°"}
                     />
