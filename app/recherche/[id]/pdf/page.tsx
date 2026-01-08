@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -37,21 +37,61 @@ type RecordMeta = {
   client: ClientRow | null;
 };
 
+type RecordPhoto = {
+  id: string;
+  record_id: string;
+  path: string;
+  filename: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+};
+
+type PdfPhotoItem = {
+  id: string;
+  path: string;
+  filename: string | null;
+  position: number;
+  signedUrl: string | null;
+};
+
+const PHOTO_BUCKET = "record-photos";
+
+/**
+ * ✅ Objectif:
+ * - Inclure les photos en bas du PDF
+ * - Forcer des images "grandes" et homogènes (même taille visuelle)
+ * - Éviter un PDF sans images (préchargement best-effort)
+ *
+ * Choix UI:
+ * - grille 2 colonnes (écran)
+ * - en print: 1 colonne + images plus grandes
+ * - recadrage: object-fit: cover (toutes grandes, homogènes)
+ */
 export default function PdfPage() {
   const params = useParams();
   const recordId = String((params as any)?.id ?? "");
 
   const [meta, setMeta] = useState<RecordMeta | null>(null);
   const [rows, setRows] = useState<DeviceRow[]>([]);
+  const [photos, setPhotos] = useState<PdfPhotoItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const exportDate = useMemo(() => new Date(), []);
+  const printRequestedRef = useRef(false);
+
+  const printablePhotos = useMemo(() => {
+    return [...photos].sort((a, b) => Number(a.position) - Number(b.position));
+  }, [photos]);
 
   useEffect(() => {
     if (!recordId) return;
 
     const fetchAll = async () => {
       setLoading(true);
+      printRequestedRef.current = false;
 
       try {
         // 1) Record (sans join client pour éviter les types "client: []" en prod)
@@ -75,14 +115,13 @@ export default function PdfPage() {
             .single();
 
           if (cliErr) {
-            // on ne bloque pas le PDF si le client n'est pas trouvable
+            // non bloquant
             console.error("PDF FETCH CLIENT ERROR", cliErr);
           } else {
             client = (cli as unknown as ClientRow) ?? null;
           }
         }
 
-        // ✅ On construit l'objet meta explicitement (plus de `as RecordMeta`)
         setMeta({
           id: recRow.id,
           commentaire: recRow.commentaire,
@@ -100,13 +139,52 @@ export default function PdfPage() {
           .order("position", { ascending: true });
 
         if (devErr) throw devErr;
-
         setRows(((devices ?? []) as unknown) as DeviceRow[]);
 
-        setLoading(false);
+        // 4) Photos (table record_photos + signed urls)
+        const { data: photoRows, error: photoErr } = await supabase
+          .from("record_photos")
+          .select("id, record_id, path, filename, mime_type, size_bytes, position, created_at, created_by")
+          .eq("record_id", recordId)
+          .order("position", { ascending: true });
 
-        // 4) Print (petit délai pour laisser le DOM se peindre)
-        setTimeout(() => window.print(), 250);
+        if (photoErr) {
+          console.error("PDF FETCH PHOTOS ERROR", photoErr);
+          setPhotos([]);
+        } else {
+          const list = (photoRows ?? []) as RecordPhoto[];
+
+          // Signed URLs batch
+          const paths = list.map((p) => p.path).filter(Boolean);
+
+          const signedUrlByPath = new Map<string, string>();
+
+          if (paths.length > 0) {
+            const { data: signed, error: signErr } = await supabase.storage
+              .from(PHOTO_BUCKET)
+              .createSignedUrls(paths, 60 * 30); // 30 minutes
+
+            if (signErr) {
+              console.error("PDF SIGNED URLS ERROR", signErr);
+            } else {
+              (signed ?? []).forEach((s) => {
+                if (s?.path && s?.signedUrl) signedUrlByPath.set(s.path, s.signedUrl);
+              });
+            }
+          }
+
+          const items: PdfPhotoItem[] = list.map((p) => ({
+            id: p.id,
+            path: p.path,
+            filename: p.filename ?? null,
+            position: Number(p.position) || 0,
+            signedUrl: signedUrlByPath.get(p.path) ?? null,
+          }));
+
+          setPhotos(items);
+        }
+
+        setLoading(false);
       } catch (err: any) {
         console.error("PDF FETCH ERROR (FULL)", {
           message: err?.message,
@@ -117,12 +195,39 @@ export default function PdfPage() {
         });
         setMeta(null);
         setRows([]);
+        setPhotos([]);
         setLoading(false);
       }
     };
 
     fetchAll();
   }, [recordId]);
+
+  /**
+   * ✅ Impression auto quand:
+   * - la page n’est plus en loading
+   * - et qu’on a eu le temps de charger les images (best effort)
+   *
+   * Important: on utilise printablePhotos (state à jour),
+   * pas `photos` dans le fetch (qui n'est pas encore à jour).
+   */
+  useEffect(() => {
+    if (loading) return;
+    if (!meta) return;
+    if (printRequestedRef.current) return;
+
+    const run = async () => {
+      printRequestedRef.current = true;
+
+      // best effort: précharge les images (évite PDF sans photos)
+      await preloadImages(printablePhotos, 3500);
+
+      // petit délai pour laisser le DOM se peindre
+      setTimeout(() => window.print(), 250);
+    };
+
+    run();
+  }, [loading, meta, printablePhotos]);
 
   if (loading) return <p style={{ padding: 20 }}>Préparation du PDF…</p>;
   if (!meta) return <p style={{ padding: 20 }}>Impossible de générer le PDF.</p>;
@@ -213,6 +318,33 @@ export default function PdfPage() {
             </tbody>
           </table>
         </section>
+
+        {/* ✅ PHOTOS en bas du PDF */}
+        <section className="section">
+          <h2 className="h2">Photos</h2>
+
+          {printablePhotos.length === 0 ? (
+            <div className="muted">Aucune photo enregistrée.</div>
+          ) : (
+            <div className="photoGrid">
+              {printablePhotos.map((p) => (
+                <figure key={p.id} className="photoCard">
+                  <div className="photoImgWrap">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    {p.signedUrl ? (
+                      <img src={p.signedUrl} alt={p.filename ?? "photo"} className="photoImg" />
+                    ) : (
+                      <div className="photoMissing">Image indisponible</div>
+                    )}
+                  </div>
+                  <figcaption className="photoCaption">
+                    {p.filename ?? p.path.split("/").pop() ?? "Photo"}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
 
       {/* UI hors impression */}
@@ -223,6 +355,24 @@ export default function PdfPage() {
       </div>
     </div>
   );
+}
+
+/** ✅ Best effort: précharge les images avant impression (évite PDF sans photos) */
+async function preloadImages(items: PdfPhotoItem[], timeoutMs: number) {
+  const urls = items.map((i) => i.signedUrl).filter(Boolean) as string[];
+  if (urls.length === 0) return;
+
+  const loadOne = (src: string) =>
+    new Promise<void>((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => resolve();
+      img.src = src;
+    });
+
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+
+  await Promise.race([Promise.all(urls.map(loadOne)).then(() => undefined), timeout]);
 }
 
 const printCss = `
@@ -308,13 +458,70 @@ const printCss = `
   cursor:pointer;
 }
 
+/* Photos */
+.muted{
+  font-size:12px;
+  color:#6b7280;
+  font-weight:700;
+}
+
+/* ✅ écran: 2 colonnes */
+.photoGrid{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap:12px;
+}
+
+.photoCard{
+  border:1px solid #e5e7eb;
+  border-radius:12px;
+  overflow:hidden;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ✅ cadre fixe => images “grandes” et homogènes */
+.photoImgWrap{
+  width:100%;
+  height: 320px;           /* ajuste ici: 260 / 320 / 380 */
+  background:#f9fafb;
+  display:block;
+}
+
+/* ✅ cover => toutes les images remplissent, même si qualité/ratio différents */
+.photoImg{
+  width:100%;
+  height:100%;
+  object-fit: cover;       /* cover = recadrage */
+  object-position: center;
+  display:block;
+}
+
+.photoMissing{
+  width:100%;
+  height:100%;
+  display:grid;
+  place-items:center;
+  background:#f9fafb;
+  color:#6b7280;
+  font-weight:800;
+}
+
+.photoCaption{
+  padding:8px 10px;
+  font-size:12px;
+  font-weight:800;
+  color:#374151;
+  border-top:1px solid #e5e7eb;
+  word-break: break-word;
+}
+
 /* Print */
 @page { size: A4 portrait; margin: 12mm; }
 
 @media print {
   /* ✅ clé: on cache tout le document, puis on ré-affiche uniquement .printArea */
   body * { visibility: hidden !important; }
-
   .printArea, .printArea * { visibility: visible !important; }
 
   /* ✅ on place la zone imprimable en haut à gauche */
@@ -334,9 +541,22 @@ const printCss = `
   .header{ border-radius:0; }
   .commentBox{ border-radius:0; }
   .table{ border-radius:0; }
+  .photoCard{ border-radius:0; }
 
   /* éviter que les lignes se coupent */
   tr { break-inside: avoid; page-break-inside: avoid; }
   thead { display: table-header-group; }
+
+  /* ✅ print: 1 colonne + images encore plus grandes */
+  .photoGrid{
+    grid-template-columns: 1fr;
+  }
+  .photoImgWrap{
+    height: 420px; /* ajuste ici si besoin */
+  }
+
+  /* photos: éviter qu’une photo soit coupée entre 2 pages */
+  .photoCard{ break-inside: avoid; page-break-inside: avoid; }
+  img{ break-inside: avoid; page-break-inside: avoid; }
 }
 `;
