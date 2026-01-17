@@ -12,7 +12,7 @@ type DeviceRow = {
   localisation_zone: string;
   emplacement: string;
   type_dispositif: string;
-  numero: string | null; // ✅ manuel
+  numero: string | null; // ✅ manuel (texte)
   position: number; // ✅ ordre d’affichage
 };
 
@@ -137,8 +137,18 @@ export default function ModificationPage() {
 
       if (!devicesError && devices) {
         // ⚠️ on normalise quand même au cas où
-        const sorted = (devices as any[]).slice().sort((a, b) => Number(a.position) - Number(b.position));
-        const normalized = sorted.map((r, idx) => ({ ...(r as DeviceRow), position: idx + 1 }));
+        const sorted = (devices as any[])
+          .slice()
+          .sort((a, b) => Number(a.position) - Number(b.position));
+        const normalized = sorted.map((r, idx) => ({
+          ...(r as DeviceRow),
+          // on force numero en string/null
+          numero:
+            r?.numero === null || r?.numero === undefined
+              ? null
+              : String(r.numero),
+          position: idx + 1,
+        }));
         setRows(normalized);
       } else if (devicesError) {
         console.error("FETCH DEVICES ERROR", devicesError);
@@ -178,7 +188,6 @@ export default function ModificationPage() {
         .single();
 
       if (!metaError && meta) {
-        // ✅ FIX BUILD: on ne caste plus "as RecordMeta" direct
         const typed = coerceRecordMeta(meta as RecordMetaRaw);
         setRecordMeta(typed);
         setMetaDraft(typed);
@@ -204,7 +213,9 @@ export default function ModificationPage() {
    *  MODIFICATION LOCAL (text fields)
    ======================= */
   const updateRow = (id: string, field: FieldKey, value: string) => {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
+    setRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
+    );
     dirtyIds.current.add(id);
     setSaveState("dirty");
   };
@@ -223,27 +234,20 @@ export default function ModificationPage() {
 
   /** =======================
    *  VALIDATION numero
+   *  ✅ autorise les doublons
    ======================= */
   const validateNumeros = (candidateRows: DeviceRow[]) => {
     setNumeroError(null);
 
     const active = candidateRows.filter((r) => !isEmptyRow(r));
-
     for (const r of active) {
       const n = (r.numero ?? "").trim();
       if (!n) return "⚠️ Le champ N° est obligatoire pour chaque ligne non vide.";
     }
 
-    const seen = new Set<string>();
-    for (const r of active) {
-      const n = (r.numero ?? "").trim().toUpperCase();
-      if (seen.has(n)) return "⚠️ Deux lignes ont le même N°. Merci de mettre des numéros uniques.";
-      seen.add(n);
-    }
-
+    // ✅ plus de check d'unicité => doublons autorisés
     return null;
   };
-
 
   /** =======================
    *  MOVE ROW (boutons à gauche)
@@ -307,14 +311,16 @@ export default function ModificationPage() {
       if (fetchError) throw fetchError;
 
       /* 2️⃣ Historique */
-      const { error: historyError } = await supabase.from("record_history").insert({
-        record_id: recordId,
-        updated_by: userId,
-        snapshot: {
-          rows: currentRows ?? [],
-          commentaire,
-        },
-      });
+      const { error: historyError } = await supabase
+        .from("record_history")
+        .insert({
+          record_id: recordId,
+          updated_by: userId,
+          snapshot: {
+            rows: currentRows ?? [],
+            commentaire,
+          },
+        });
 
       if (historyError) throw historyError;
 
@@ -328,7 +334,9 @@ export default function ModificationPage() {
       /* 3️⃣ Sauvegarde courante (✅ positions en 2 phases pour éviter collision UNIQUE) */
 
       // 3a) on s’assure que l’ordre local est stable
-      const sortedRows = [...rows].sort((a, b) => Number(a.position) - Number(b.position));
+      const sortedRows = [...rows].sort(
+        (a, b) => Number(a.position) - Number(b.position)
+      );
 
       // 3b) on normalise en 1..n
       const normalized = sortedRows.map((r, idx) => ({
@@ -343,7 +351,7 @@ export default function ModificationPage() {
         localisation_zone: r.localisation_zone || "",
         emplacement: r.emplacement || "",
         type_dispositif: r.type_dispositif || "",
-        numero: (r.numero ?? "").trim(),
+        numero: (r.numero ?? "").trim(), // ✅ TEXTE
         position: 1000000 + Number(r.position), // <-- clé du fix
       }));
 
@@ -360,16 +368,26 @@ export default function ModificationPage() {
         localisation_zone: r.localisation_zone || "",
         emplacement: r.emplacement || "",
         type_dispositif: r.type_dispositif || "",
-        numero: (r.numero ?? "").trim(),
+        numero: (r.numero ?? "").trim(), // ✅ TEXTE (NE PAS Number(...))
         position: Number(r.position),
       }));
 
-      const { error: saveError } = await supabase
+
+      const { data: saved, error: saveError } = await supabase
         .from("record_devices")
-        .upsert(finalPayload, { onConflict: "id" });
+        .upsert(finalPayload, { onConflict: "id" })
+        .select("id"); // force une réponse lisible
 
-      if (saveError) throw saveError;
+      if (saveError) {
+        console.error("❌ UPSERT record_devices ERROR =", JSON.stringify(saveError, null, 2));
+        throw saveError;
+      }
+      console.log("✅ UPSERT OK, rows:", saved?.length);
 
+
+
+
+      
       // ✅ IMPORTANT : on met aussi l’état React à jour avec les positions normalisées
       setRows(normalized);
 
@@ -383,16 +401,15 @@ export default function ModificationPage() {
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 1200);
     } catch (err: any) {
-      const full = {
-        message: err?.message,
-        details: err?.details,
-        hint: err?.hint,
-        code: err?.code,
-        raw: err,
-      };
-      console.error("❌ SAVE ERROR (FULL)", full);
-      console.error("❌ SAVE ERROR (RAW)", err);
-      console.error("❌ SAVE ERROR (keys)", err ? Object.getOwnPropertyNames(err) : null);
+      // ✅ logs "robustes" pour voir le vrai message Supabase/Postgres
+      const props = err ? Object.getOwnPropertyNames(err) : [];
+      const picked: any = {};
+      for (const k of props) picked[k] = (err as any)[k];
+
+      console.error("❌ SAVE ERROR (String)", String(err));
+      console.error("❌ SAVE ERROR (props)", props);
+      console.error("❌ SAVE ERROR (picked)", picked);
+      console.error("❌ SAVE ERROR (raw)", err);
 
       setSaveState("error");
     }
@@ -401,17 +418,6 @@ export default function ModificationPage() {
   /** =======================
    *  AJOUT DE LIGNE
    ======================= */
-  const nextSuggestedNumero = useMemo(() => {
-    const used = new Set(
-      rows
-        .map((r) => Number(r.numero))
-        .filter((n) => Number.isFinite(n) && !Number.isNaN(n))
-    );
-    let n = 1;
-    while (used.has(n)) n++;
-    return n;
-  }, [rows]);
-
   const nextPosition = useMemo(() => {
     const maxPos = Math.max(
       0,
@@ -421,6 +427,9 @@ export default function ModificationPage() {
     );
     return maxPos + 1;
   }, [rows]);
+
+  // ✅ désormais "numéro suggéré" = position (texte), puisque doublons autorisés
+  const nextSuggestedNumero = useMemo(() => String(nextPosition), [nextPosition]);
 
   const addRow = async () => {
     const suggestedNumero = String(nextPosition);
@@ -436,14 +445,16 @@ export default function ModificationPage() {
         numero: suggestedNumero,
         position,
       })
-      .select("id, record_id, localisation_zone, emplacement, type_dispositif, numero, position")
+      .select(
+        "id, record_id, localisation_zone, emplacement, type_dispositif, numero, position"
+      )
       .single();
 
     if (!error && data) {
       setRows((prev) => {
         const next = [...prev, data as DeviceRow];
         next.sort((a, b) => Number(a.position) - Number(b.position));
-        return next;
+        return next.map((r, idx) => ({ ...r, position: idx + 1 }));
       });
       dirtyIds.current.add((data as any).id);
       setSaveState("dirty");
@@ -484,7 +495,11 @@ export default function ModificationPage() {
   const updateClientDraft = (key: ClientKey, value: string) => {
     setMetaDraft((prev) => {
       if (!prev) return prev;
-      const currentClient = prev.client ?? { name: "", code_client: "", city: null };
+      const currentClient = prev.client ?? {
+        name: "",
+        code_client: "",
+        city: null,
+      };
       const nextClient = {
         ...currentClient,
         [key]: value === "" ? (key === "city" ? null : "") : value,
@@ -507,7 +522,10 @@ export default function ModificationPage() {
         date_fiche: metaDraft.date_fiche,
       };
 
-      const { error: recErr } = await supabase.from("records").update(recordPayload).eq("id", recordId);
+      const { error: recErr } = await supabase
+        .from("records")
+        .update(recordPayload)
+        .eq("id", recordId);
       if (recErr) throw recErr;
 
       // 2) update CLIENTS (si client_id)
@@ -518,7 +536,10 @@ export default function ModificationPage() {
           city: metaDraft.client.city,
         };
 
-        const { error: cliErr } = await supabase.from("clients").update(clientPayload).eq("id", metaDraft.client_id);
+        const { error: cliErr } = await supabase
+          .from("clients")
+          .update(clientPayload)
+          .eq("id", metaDraft.client_id);
         if (cliErr) throw cliErr;
       }
 
@@ -544,7 +565,6 @@ export default function ModificationPage() {
 
       if (error) throw error;
 
-      // ✅ FIX BUILD: pareil ici, on normalise la relation client
       const updated = coerceRecordMeta(data as RecordMetaRaw);
       setRecordMeta(updated);
       setMetaDraft(updated);
@@ -552,14 +572,15 @@ export default function ModificationPage() {
       setMetaSaveState("saved");
       setTimeout(() => setMetaSaveState("idle"), 1200);
     } catch (err: any) {
-      const full = {
-        message: err?.message,
-        details: err?.details,
-        hint: err?.hint,
-        code: err?.code,
-        raw: err,
-      };
-      console.error("SAVE META ERROR (FULL)", full);
+      const props = err ? Object.getOwnPropertyNames(err) : [];
+      const picked: any = {};
+      for (const k of props) picked[k] = (err as any)[k];
+
+      console.error("SAVE META ERROR (String)", String(err));
+      console.error("SAVE META ERROR (props)", props);
+      console.error("SAVE META ERROR (picked)", picked);
+      console.error("SAVE META ERROR (raw)", err);
+
       setMetaSaveState("error");
     }
   };
@@ -633,7 +654,8 @@ export default function ModificationPage() {
                     padding: "10px 14px",
                     borderRadius: 8,
                     border: "1px solid #d1d5db",
-                    backgroundColor: metaSaveState === "saving" ? "#f3f4f6" : "#111827",
+                    backgroundColor:
+                      metaSaveState === "saving" ? "#f3f4f6" : "#111827",
                     color: metaSaveState === "saving" ? "#111827" : "#ffffff",
                     cursor:
                       metaSaveState === "saving"
@@ -666,7 +688,10 @@ export default function ModificationPage() {
               <Info label="Ville" value={recordMeta.client?.city} />
               <Info label="Code client" value={recordMeta.client?.code_client} />
               <Info label="Groupe" value={recordMeta.groupe} />
-              <Info label="Annexe au contrat d’abonnement n°" value={recordMeta.annexe_contrat_numero} />
+              <Info
+                label="Annexe au contrat d’abonnement n°"
+                value={recordMeta.annexe_contrat_numero}
+              />
               <Info label="Date de la fiche" value={recordMeta.date_fiche} />
             </>
           )}
@@ -682,7 +707,9 @@ export default function ModificationPage() {
           gap: 16,
         }}
       >
-        <h1 style={{ fontSize: 24, fontWeight: 700 }}>Implantation des dispositifs</h1>
+        <h1 style={{ fontSize: 24, fontWeight: 700 }}>
+          Implantation des dispositifs
+        </h1>
 
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           <SaveBadge state={saveState} />
@@ -797,7 +824,12 @@ export default function ModificationPage() {
                         alignItems: "center",
                       }}
                     >
-                      <button type="button" onClick={() => moveUp(row.id)} title="Monter la ligne" style={swapBtnStyle}>
+                      <button
+                        type="button"
+                        onClick={() => moveUp(row.id)}
+                        title="Monter la ligne"
+                        style={swapBtnStyle}
+                      >
                         ↑
                       </button>
                       <button
@@ -820,17 +852,25 @@ export default function ModificationPage() {
                   </Td>
 
                   <Td>
-                    <SmallInput list="emplacements" value={row.emplacement} onChange={(v) => updateRow(row.id, "emplacement", v)} />
+                    <SmallInput
+                      list="emplacements"
+                      value={row.emplacement}
+                      onChange={(v) => updateRow(row.id, "emplacement", v)}
+                    />
                   </Td>
 
                   <Td>
-                    <SmallInput list="types" value={row.type_dispositif} onChange={(v) => updateRow(row.id, "type_dispositif", v)} />
+                    <SmallInput
+                      list="types"
+                      value={row.type_dispositif}
+                      onChange={(v) => updateRow(row.id, "type_dispositif", v)}
+                    />
                   </Td>
 
                   {/* ✅ NUMERO MANUEL */}
                   <Td style={{ textAlign: "center" }}>
                     <NumeroInput
-                      value={(row.numero ?? "")}
+                      value={row.numero ?? ""}
                       onChange={(v) => updateNumero(row.id, v)}
                       placeholder={empty ? "" : "N°"}
                     />
@@ -884,14 +924,8 @@ export default function ModificationPage() {
         </span>
       </div>
 
-
-
-
-
-
       {/* PHOTOS */}
       <RecordPhotos recordId={recordId} isAdmin={isAdmin} />
-
 
       {/* COMMENTAIRE */}
       <div
@@ -1042,7 +1076,15 @@ function SmallInput({ list, value, onChange }: { list: string; value: string; on
   );
 }
 
-function NumeroInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+function NumeroInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
   return (
     <input
       inputMode="text"
